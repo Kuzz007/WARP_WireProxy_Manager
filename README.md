@@ -1,12 +1,12 @@
 # WARP WireProxy Manager
 
-`WARP WireProxy Manager` — это неинтерактивный установщик и менеджер для схемы:
+`WARP WireProxy Manager` — неинтерактивный установщик и менеджер для схемы:
 
 ```text
 3x-ui / Xray → socks5://127.0.0.1:40000 → wireproxy → Cloudflare WARP → internet
 ```
 
-Проект рассчитан на VPS с Linux/systemd. Основная цель — быстро поднять Cloudflare WARP как локальный SOCKS5 outbound для 3x-ui/Xray, автоматически подобрать рабочий WARP endpoint и поддерживать его живым через cron-проверку.
+Проект рассчитан на VPS с Linux/systemd. Цель — быстро поднять Cloudflare WARP как локальный SOCKS5 outbound для 3x-ui/Xray, автоматически подобрать рабочий WARP endpoint и поддерживать его живым через cron-проверку.
 
 Репозиторий:
 
@@ -14,10 +14,10 @@
 https://github.com/Kuzz007/WARP_WireProxy_Manager
 ```
 
-Текущая основная версия:
+Текущая версия:
 
 ```text
-warpwp v1.1.4
+warpwp v1.1.5
 warp-wireproxy-native.sh v1.1.0
 ```
 
@@ -25,13 +25,13 @@ warp-wireproxy-native.sh v1.1.0
 
 ## Быстрый старт
 
-### 1. Установить менеджер
+Установить менеджер:
 
 ```bash
 bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warpwp.sh?nocache=$(date +%s)") --install-manager
 ```
 
-Если raw-кэш GitHub отдаёт старую версию, можно поставить через GitHub API:
+Если raw-кэш GitHub отдаёт старую версию, поставить через GitHub API:
 
 ```bash
 curl -fsSL \
@@ -42,19 +42,19 @@ curl -fsSL \
 chmod +x /usr/local/bin/warpwp
 ```
 
-### 2. Открыть меню
+Открыть меню:
 
 ```bash
 warpwp
 ```
 
-### 3. Выбрать пункт
+Установить/обновить WARP + wireproxy + cron:
 
-```text
-1) Установить / обновить WARP + wireproxy + cron
+```bash
+warpwp --install
 ```
 
-### 4. Проверить состояние
+Проверить состояние:
 
 ```bash
 warpwp --doctor
@@ -76,10 +76,7 @@ cron использует flock lock
 
 - Устанавливает WARP + `wireproxy` без интерактивного меню `fscarmen`.
 - Сам регистрирует WARP-устройство через Cloudflare API.
-- Создаёт:
-  - `/etc/wireguard/warp.conf`
-  - `/etc/wireguard/proxy.conf`
-  - `/etc/systemd/system/wireproxy.service`
+- Создаёт `warp.conf`, `proxy.conf` и `wireproxy.service`.
 - Поднимает локальный SOCKS5:
 
 ```text
@@ -87,40 +84,18 @@ cron использует flock lock
 ```
 
 - Сканирует WARP endpoint'ы Cloudflare.
-- Выбирает самый быстрый endpoint, где Cloudflare trace показывает:
-
-```text
-warp=on
-```
-
+- Выбирает рабочий endpoint, где Cloudflare trace показывает `warp=on`.
 - Поддерживает три режима ремонта endpoint'ов:
   - `warpwp --quick-scan` — быстрый scan, `scan-count=15`;
   - `warpwp --check` — обычный scan, `scan-count=25`;
   - `warpwp --deep-scan` — глубокий scan, `scan-count=150`.
-- Кэширует хорошие endpoint'ы:
-
-```text
-/etc/wireguard/warp-endpoints.good
-```
-
-- Кэширует плохие endpoint'ы:
-
-```text
-/etc/wireguard/warp-endpoints.bad
-```
-
+- Кэширует хорошие endpoint'ы: `/etc/wireguard/warp-endpoints.good`.
+- Кэширует плохие endpoint'ы: `/etc/wireguard/warp-endpoints.bad`.
 - Использует blacklist: endpoint с 3+ ошибками не проверяется 24 часа.
 - Использует `flock`, чтобы cron/check не запускались параллельно.
-- Создаёт короткую команду:
-
-```bash
-warpwp
-```
-
-- Ставит cron-автопроверку endpoint'а.
-- Если WARP умер — автоматически пересканирует endpoint'ы, подменит рабочий и перезапустит `wireproxy`.
 - Показывает готовые блоки для 3x-ui/Xray.
 - Показывает готовые строки для zapret4rocket.
+- Выводит машинно-читаемый JSON-статус через `warpwp --status-json`.
 
 ---
 
@@ -128,7 +103,7 @@ warpwp
 
 ```text
 ============================================================
- WARP + wireproxy manager v1.1.4
+ WARP + wireproxy manager v1.1.5
 ============================================================
  1) Установить / обновить WARP + wireproxy + cron
  2) Проверить состояние
@@ -145,6 +120,7 @@ warpwp
 13) Показать строки для zapret4rocket
 14) Quick scan endpoint
 15) Deep scan endpoint
+16) Показать JSON-статус
  0) Выход
 ============================================================
 ```
@@ -160,21 +136,75 @@ warpwp
 | `warpwp --install-cron` | Переустановить только cron с `flock` lock |
 | `warpwp --cron` | Алиас для `--install-cron` |
 | `warpwp --status` | Показать состояние |
+| `warpwp --status-json` | Показать JSON-статус |
+| `warpwp --json` | Алиас для `--status-json` |
 | `warpwp --doctor` | Расширенная диагностика |
 | `warpwp --check` | Обычный ремонт endpoint, `scan-count=25` |
 | `warpwp --quick-scan` | Быстрый ремонт endpoint, `scan-count=15` |
 | `warpwp --quick` | Алиас для `--quick-scan` |
 | `warpwp --deep-scan` | Глубокий ремонт endpoint, `scan-count=150` |
 | `warpwp --deep` | Алиас для `--deep-scan` |
-| `warpwp --xray` | Показать только блоки для 3x-ui/Xray |
-| `warpwp --zapret` | Показать только строки для zapret4rocket |
+| `warpwp --xray` | Показать блоки для 3x-ui/Xray |
+| `warpwp --zapret` | Показать строки для zapret4rocket |
 | `warpwp --logs` | Показать логи cron и `wireproxy` |
-| `warpwp --memo` | Показать полную памятку для 3x-ui/zapret |
+| `warpwp --memo` | Показать полную памятку |
 | `warpwp --update` | Обновить локальные скрипты |
 | `warpwp --self-update` | То же самое, что `--update` |
 | `warpwp --version` | Показать версию менеджера |
 | `warpwp --remove` | Безопасно удалить компоненты менеджера |
 | `warpwp --purge` | Жёстко удалить WARP/wireproxy/wgcf/warp-cli/fscarmen-следы |
+
+---
+
+## JSON-статус
+
+Вывести машинно-читаемый статус:
+
+```bash
+warpwp --status-json
+```
+
+или:
+
+```bash
+warpwp --json
+```
+
+Пример структуры:
+
+```json
+{
+  "manager_version": "1.1.5",
+  "native_version": "1.1.0",
+  "healthy": true,
+  "installed": true,
+  "service": {
+    "name": "wireproxy",
+    "state": "active",
+    "active": true
+  },
+  "socks5": {
+    "host": "127.0.0.1",
+    "port": 40000,
+    "listening": true
+  },
+  "warp": {
+    "endpoint": "188.114.97.249:500",
+    "endpoint_port": "500",
+    "ip": "104.28.x.x",
+    "colo": "ARN",
+    "loc": "RU",
+    "status": "on",
+    "on": true
+  },
+  "cron": {
+    "installed": true,
+    "uses_flock": true
+  }
+}
+```
+
+Поле `healthy=true` означает, что WARP установлен, `wireproxy` активен, SOCKS5 слушает, Cloudflare trace даёт `warp=on`, cron установлен и использует `flock`.
 
 ---
 
@@ -186,15 +216,11 @@ warpwp
 warpwp --quick-scan
 ```
 
-Использует `scan-count=15`. Подходит для быстрой ручной проверки, когда WARP в целом живой, но хочется быстро перепроверить endpoint.
-
 Обычный scan:
 
 ```bash
 warpwp --check
 ```
-
-Использует `scan-count=25`. Это стандартный режим, который также используется cron-задачей.
 
 Глубокий scan:
 
@@ -202,9 +228,7 @@ warpwp --check
 warpwp --deep-scan
 ```
 
-Использует `scan-count=150`. Подходит, если обычный ремонт не нашёл хороший endpoint или нужна более тщательная переоценка WARP-точек.
-
-Все режимы используют `flock` lock:
+Все режимы используют lock:
 
 ```text
 /var/lock/warpwp-check.lock
@@ -213,8 +237,6 @@ warpwp --deep-scan
 ---
 
 ## Что ставится на сервер
-
-Основные файлы:
 
 ```text
 /usr/local/bin/warpwp
@@ -253,20 +275,6 @@ warpwp --deep-scan
 */10 * * * * root flock -n /var/lock/warpwp-check.lock /usr/local/bin/warp-wireproxy-native.sh --check --scan-count 25 >> /var/log/warp-check.log 2>&1
 ```
 
-Зачем нужен `flock`:
-
-```text
-если предыдущий endpoint scan ещё идёт, новый cron-запуск не начнётся
-нет параллельной перезаписи proxy.conf
-нет двойного restart wireproxy
-```
-
-Лог:
-
-```bash
-tail -n 80 /var/log/warp-check.log
-```
-
 Что делает cron:
 
 1. Проверяет локальный SOCKS5 `127.0.0.1:40000`.
@@ -276,23 +284,22 @@ tail -n 80 /var/log/warp-check.log
 5. Проверяет хорошие endpoint'ы из кэша.
 6. Проверяет fallback endpoint'ы.
 7. При необходимости запускает random scan.
-8. Выбирает рабочий и быстрый endpoint.
+8. Выбирает рабочий endpoint.
 9. Подменяет `Endpoint` в `warp.conf` и `proxy.conf`.
 10. Перезапускает `wireproxy`.
+
+Логи:
+
+```bash
+tail -n 80 /var/log/warp-check.log
+```
 
 ---
 
 ## Кэш endpoint'ов
 
-Хорошие endpoint'ы:
-
 ```bash
 cat /etc/wireguard/warp-endpoints.good
-```
-
-Плохие endpoint'ы:
-
-```bash
 cat /etc/wireguard/warp-endpoints.bad 2>/dev/null
 ```
 
@@ -301,14 +308,6 @@ cat /etc/wireguard/warp-endpoints.bad 2>/dev/null
 ```text
 endpoint    time_total    colo    loc    timestamp
 ```
-
-Пример:
-
-```text
-188.114.97.249:500    0    quick    quick    1779364491
-```
-
-`time_total=0 quick quick` означает, что endpoint был подтверждён быстрой проверкой `--check`, а не полным сканом.
 
 Формат `bad`:
 
@@ -322,30 +321,11 @@ endpoint    fail_count    timestamp
 
 ## Doctor / диагностика
 
-Запуск:
-
 ```bash
 warpwp --doctor
 ```
 
-Проверяет:
-
-```text
-root права
-curl/systemctl/ss/grep/awk/sed
-flock
-/usr/local/bin/warpwp
-/usr/local/bin/warp-wireproxy-native.sh
-warp.conf
-proxy.conf
-wireproxy.service
-wireproxy active
-SOCKS5 127.0.0.1:40000
-Cloudflare trace warp=on
-cron
-cron использует flock lock
-лог
-```
+Проверяет root, зависимости, `wireproxy.service`, SOCKS5-порт, Cloudflare trace, cron, `flock`, логи и основные конфиги.
 
 Пример здорового состояния:
 
@@ -369,9 +349,6 @@ curl -m 10 -s -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/tr
 Хороший результат:
 
 ```text
-ip=...
-colo=...
-loc=...
 warp=on
 ```
 
@@ -379,13 +356,13 @@ warp=on
 
 ## 3x-ui / Xray
 
-Быстро вывести только блоки для Xray:
+Вывести блоки:
 
 ```bash
 warpwp --xray
 ```
 
-Добавь эти outbounds в конфиг Xray/3x-ui:
+Outbounds:
 
 ```json
 {
@@ -412,50 +389,21 @@ warpwp --xray
 }
 ```
 
-Важно: в routing правилах используй:
+Routing вести на:
 
 ```json
 "outboundTag": "WARP"
-```
-
-Не направляй правила напрямую на `WARP-socks5`. `WARP-socks5` — это технический промежуточный outbound.
-
----
-
-## Пример routing для OpenAI / ChatGPT
-
-```json
-{
-  "type": "field",
-  "domain": [
-    "domain:openai.com",
-    "domain:chatgpt.com",
-    "domain:oaistatic.com",
-    "domain:oaiusercontent.com"
-  ],
-  "outboundTag": "WARP"
-}
 ```
 
 ---
 
 ## zapret4rocket
 
-Быстро вывести только строки для zapret4rocket:
+Вывести строки:
 
 ```bash
 warpwp --zapret
 ```
-
-Для WARP важен внешний UDP-порт endpoint'а, а не локальный порт `40000`.
-
-Локальный порт:
-
-```text
-127.0.0.1:40000
-```
-
-это SOCKS5 `wireproxy`. Его в zapret добавлять не нужно.
 
 Рекомендуемая строка:
 
@@ -463,29 +411,13 @@ warpwp --zapret
 NFQWS_PORTS_UDP=443,2408,1843,1010,500,1701,4500,4443,8443,8095
 ```
 
-Открыть конфиг zapret4rocket:
-
-```bash
-nano /opt/zapret/config
-```
-
-Перезапустить:
-
-```bash
-/opt/zapret/init.d/sysv/zapret restart
-```
-
-или:
-
-```bash
-systemctl restart zapret
-```
+Локальный порт `40000` — это SOCKS5 wireproxy. Его в zapret добавлять не нужно.
 
 ---
 
 ## Ручной запуск native-скрипта
 
-Если менеджер не нужен, можно запустить основной установщик напрямую:
+Установка напрямую:
 
 ```bash
 bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh?nocache=$(date +%s)")
@@ -497,41 +429,21 @@ bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Mana
 bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh?nocache=$(date +%s)") --check --scan-count 25
 ```
 
-Более глубокое сканирование:
+Глубокий scan:
 
 ```bash
 bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh?nocache=$(date +%s)") --check --scan-count 150
-```
-
-С ручными endpoint'ами:
-
-```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh?nocache=$(date +%s)") --endpoints "162.159.192.244:1843 162.159.195.100:1010"
 ```
 
 ---
 
 ## Обновление
 
-Обновить локальные скрипты:
-
 ```bash
 warpwp --update
 ```
 
-или:
-
-```bash
-warpwp --self-update
-```
-
-Обновить сам менеджер из GitHub напрямую:
-
-```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warpwp.sh?nocache=$(date +%s)") --install-manager
-```
-
-Обновить через GitHub API, если raw-кэш отдаёт старую версию:
+Через GitHub API, если raw-кэш отдаёт старую версию:
 
 ```bash
 curl -fsSL \
@@ -553,43 +465,19 @@ warpwp --version
 
 ## Удаление и переустановка
 
-Безопасное удаление компонентов менеджера:
+Безопасное удаление:
 
 ```bash
 warpwp --remove
 ```
 
-Удаляет только основные компоненты менеджера:
-
-```text
-/usr/local/bin/warp-wireproxy-native.sh
-/etc/cron.d/warp-wireproxy-check
-/etc/systemd/system/wireproxy.service
-/etc/wireguard/warp.conf
-/etc/wireguard/proxy.conf
-/etc/wireguard/warp-account.json
-/etc/wireguard/warp-private.key
-```
-
-Полная жёсткая очистка:
+Полная очистка:
 
 ```bash
 warpwp --purge
 ```
 
-Дополнительно удаляет возможные следы старых установок:
-
-```text
-wireproxy binary
-warp-cli
-warp-svc
-wgcf
-старые fscarmen файлы
-/etc/wireguard
-старые backup-папки
-```
-
-После очистки можно установить заново:
+После очистки:
 
 ```bash
 warpwp --install
@@ -599,73 +487,45 @@ warpwp --install
 
 ## CI / проверка скриптов
 
-В репозитории есть GitHub Actions workflow:
+Workflow:
 
 ```text
 .github/workflows/shellcheck.yml
 ```
 
-Он проверяет все `*.sh`:
+Проверяет все `*.sh`:
 
 ```text
 bash -n
 shellcheck --severity=warning
 ```
 
-Это должно ловить синтаксические ошибки до запуска скриптов на сервере.
-
 ---
 
 ## Troubleshooting
 
-### `apt update` падает из-за стороннего репозитория
-
-Например:
-
-```text
-E: The repository 'https://packagecloud.io/ookla/speedtest-cli/ubuntu noble Release' does not have a Release file.
-```
-
-Найти источник:
+Если `apt update` падает из-за Ookla/packagecloud:
 
 ```bash
 grep -Rni "packagecloud.io/ookla" /etc/apt/
-```
-
-Закомментировать:
-
-```bash
 grep -Rli "packagecloud.io/ookla" /etc/apt/ | xargs -r sed -i '/packagecloud\.io\/ookla/s/^/# /'
 apt update
 ```
 
-Если активна строка `deb-src`, её тоже нужно закомментировать:
-
-```bash
-sed -i 's/^deb-src /# deb-src /' /etc/apt/sources.list.d/ookla_speedtest-cli.list
-apt update
-```
-
----
-
-### Проверить `wireproxy`
+Проверить `wireproxy`:
 
 ```bash
 systemctl status wireproxy --no-pager -l | head -80
 journalctl -u wireproxy -n 80 --no-pager
 ```
 
----
-
-### Проверить порт SOCKS5
+Проверить порт:
 
 ```bash
 ss -lntup | grep ':40000'
 ```
 
----
-
-### Проверить текущий endpoint
+Проверить endpoint:
 
 ```bash
 grep -i '^Endpoint' /etc/wireguard/warp.conf
