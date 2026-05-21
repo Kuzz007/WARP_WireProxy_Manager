@@ -20,6 +20,14 @@
     - рекомендуемую строку `NFQWS_PORTS_UDP`;
     - команды открытия конфига и перезапуска zapret.
 
+- [x] `warpwp --quick-scan`
+  - Быстрый ремонт endpoint.
+  - Использует `scan-count=15`.
+
+- [x] `warpwp --deep-scan`
+  - Глубокий ремонт endpoint.
+  - Использует `scan-count=150`.
+
 - [x] `flock` lock для cron/check.
 - [x] good endpoint cache: `/etc/wireguard/warp-endpoints.good`.
 - [x] bad endpoint cache: `/etc/wireguard/warp-endpoints.bad`.
@@ -31,8 +39,6 @@
 
 ## Возможные следующие задачи
 
-- [ ] `warpwp --quick-scan` — быстрый scan 10–25 endpoint'ов.
-- [ ] `warpwp --deep-scan` — глубокий scan 100–200 endpoint'ов.
 - [ ] `warpwp --status-json` — JSON-статус для внешних панелей/автоматизации.
 - [ ] systemd timer как альтернатива cron.
 - [ ] автообновление README-команд при изменении версии.
