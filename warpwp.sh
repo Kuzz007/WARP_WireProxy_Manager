@@ -4,7 +4,7 @@
 
 set -Eeuo pipefail
 
-VERSION="1.1.2"
+VERSION="1.1.3"
 REPO_RAW="https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main"
 NATIVE_URL="$REPO_RAW/warp-wireproxy-native.sh"
 MANAGER_URL="$REPO_RAW/warpwp.sh"
@@ -289,69 +289,13 @@ purge_all() {
   ok "PURGE завершён. Команда warpwp оставлена."
 }
 
-print_commands() {
-  cat <<EOF_CMDS
+print_xray() {
+  cat <<EOF_XRAY
 ============================================================
-КОМАНДЫ
-============================================================
-Установить менеджер:
-  bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warpwp.sh?nocache=\$(date +%s)") --install-manager
-
-Открыть меню:
-  warpwp
-
-Основные команды:
-  warpwp --install       # установить / обновить всё
-  warpwp --install-cron  # переустановить только cron с flock lock
-  warpwp --status        # состояние
-  warpwp --doctor        # диагностика
-  warpwp --check         # ремонт endpoint
-  warpwp --memo          # памятка 3x-ui/zapret
-  warpwp --logs          # логи
-  warpwp --version       # версия
-  warpwp --remove        # безопасное удаление
-  warpwp --purge         # жёсткая очистка
-EOF_CMDS
-}
-
-print_memo_short() {
-  local ep port
-  ep="$(current_endpoint)"
-  port="$(current_endpoint_port)"
-  [[ -z "$ep" ]] && ep="ещё не установлен"
-  cat <<EOF_MEMO
-------------------------------------------------------------
-ПАМЯТКА
-SOCKS5 для 3x-ui/Xray: socks5://$SOCKS_HOST:$SOCKS_PORT
-Routing в 3x-ui вести на outboundTag: WARP
-Текущий WARP endpoint: $ep
-Для zapret4rocket минимум UDP-порт endpoint: $port
-Рекомендуемая строка zapret: NFQWS_PORTS_UDP=$ZAPRET_PORTS
-Ремонт endpoint: warpwp --check
-Переустановить только cron: warpwp --install-cron
-Диагностика: warpwp --doctor
-Логи автопроверки: tail -n 80 $LOG_FILE
-------------------------------------------------------------
-EOF_MEMO
-}
-
-print_memo_full() {
-  local ep port
-  ep="$(current_endpoint)"
-  port="$(current_endpoint_port)"
-  [[ -z "$ep" ]] && ep="ещё не установлен"
-  cat <<EOF_MEMO_FULL
-============================================================
-ПАМЯТКА ДЛЯ 3x-ui / Xray / zapret4rocket
+3x-ui / Xray: WARP outbounds
 ============================================================
 
-1) SOCKS5 WARP:
-  socks5://$SOCKS_HOST:$SOCKS_PORT
-
-Проверка:
-  curl -m 10 -s -x socks5h://$SOCKS_HOST:$SOCKS_PORT https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|colo=|loc=|warp='
-
-2) 3x-ui / Xray outbounds:
+Добавь в outbounds:
 
 {
   "tag": "WARP-socks5",
@@ -376,18 +320,121 @@ print_memo_full() {
   }
 }
 
-Routing направлять на outboundTag "WARP", не на "WARP-socks5".
+Пример routing для OpenAI / ChatGPT:
 
-3) zapret4rocket:
-  Текущий endpoint: $ep
-  Минимальный UDP-порт endpoint: $port
+{
+  "type": "field",
+  "domain": [
+    "domain:openai.com",
+    "domain:chatgpt.com",
+    "domain:oaistatic.com",
+    "domain:oaiusercontent.com"
+  ],
+  "outboundTag": "WARP"
+}
+
+Важно: routing направлять на outboundTag "WARP", не на "WARP-socks5".
+EOF_XRAY
+}
+
+print_zapret() {
+  local ep port
+  ep="$(current_endpoint)"
+  port="$(current_endpoint_port)"
+  [[ -z "$ep" ]] && ep="ещё не установлен"
+  cat <<EOF_ZAPRET
+============================================================
+zapret4rocket: WARP UDP ports
+============================================================
+
+Текущий WARP endpoint:
+  $ep
+
+Минимальный UDP-порт текущего endpoint:
+  $port
+
+Рекомендуемая строка:
   NFQWS_PORTS_UDP=$ZAPRET_PORTS
 
-4) Полезные команды:
+Открыть конфиг:
+  nano /opt/zapret/config
+
+Перезапустить zapret:
+  /opt/zapret/init.d/sysv/zapret restart
+
+или:
+  systemctl restart zapret
+
+Важно: локальный порт 40000 — это SOCKS5 wireproxy. Его в zapret добавлять не нужно.
+EOF_ZAPRET
+}
+
+print_commands() {
+  cat <<EOF_CMDS
+============================================================
+КОМАНДЫ
+============================================================
+Установить менеджер:
+  bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warpwp.sh?nocache=\$(date +%s)") --install-manager
+
+Открыть меню:
+  warpwp
+
+Основные команды:
+  warpwp --install       # установить / обновить всё
+  warpwp --install-cron  # переустановить только cron с flock lock
+  warpwp --status        # состояние
+  warpwp --doctor        # диагностика
+  warpwp --check         # ремонт endpoint
+  warpwp --xray          # блоки для 3x-ui/Xray
+  warpwp --zapret        # строки для zapret4rocket
+  warpwp --memo          # полная памятка
+  warpwp --logs          # логи
+  warpwp --version       # версия
+  warpwp --remove        # безопасное удаление
+  warpwp --purge         # жёсткая очистка
+EOF_CMDS
+}
+
+print_memo_short() {
+  local ep port
+  ep="$(current_endpoint)"
+  port="$(current_endpoint_port)"
+  [[ -z "$ep" ]] && ep="ещё не установлен"
+  cat <<EOF_MEMO
+------------------------------------------------------------
+ПАМЯТКА
+SOCKS5 для 3x-ui/Xray: socks5://$SOCKS_HOST:$SOCKS_PORT
+Routing в 3x-ui вести на outboundTag: WARP
+Текущий WARP endpoint: $ep
+Для zapret4rocket минимум UDP-порт endpoint: $port
+Рекомендуемая строка zapret: NFQWS_PORTS_UDP=$ZAPRET_PORTS
+Блоки Xray: warpwp --xray
+Строки zapret: warpwp --zapret
+Ремонт endpoint: warpwp --check
+Переустановить только cron: warpwp --install-cron
+Диагностика: warpwp --doctor
+Логи автопроверки: tail -n 80 $LOG_FILE
+------------------------------------------------------------
+EOF_MEMO
+}
+
+print_memo_full() {
+  print_xray
+  echo
+  print_zapret
+  echo
+  cat <<EOF_MEMO_FULL
+============================================================
+Полезные команды
+============================================================
+
   warpwp --status
   warpwp --doctor
   warpwp --check
   warpwp --install-cron
+  warpwp --xray
+  warpwp --zapret
   warpwp --logs
   warpwp --update
   warpwp --remove
@@ -409,10 +456,12 @@ menu() {
  5) Безопасно удалить WARP Manager
  6) Показать логи
  7) Показать команды
- 8) Показать памятку для 3x-ui / zapret
+ 8) Показать полную памятку
  9) Doctor / расширенная диагностика
 10) PURGE / жёсткая очистка WARP-следов
 11) Переустановить только cron/check с flock lock
+12) Показать блоки для 3x-ui / Xray
+13) Показать строки для zapret4rocket
  0) Выход
 ============================================================
 EOF_MENU
@@ -430,6 +479,8 @@ EOF_MENU
       9) doctor; pause ;;
       10) purge_all; pause ;;
       11) install_cron_check; pause ;;
+      12) print_xray; pause ;;
+      13) print_zapret; pause ;;
       0) exit 0 ;;
       *) echo "Неверный пункт"; sleep 1 ;;
     esac
@@ -445,6 +496,8 @@ case "${1:-}" in
   --doctor) doctor ;;
   --check|--repair) repair_endpoint ;;
   --logs) show_logs ;;
+  --xray) print_xray ;;
+  --zapret) print_zapret ;;
   --remove) remove_safe ;;
   --purge) purge_all ;;
   --memo) print_memo_full ;;
