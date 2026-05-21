@@ -4,7 +4,7 @@
 
 set -Eeuo pipefail
 
-VERSION="1.1.3"
+VERSION="1.1.4"
 REPO_RAW="https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main"
 NATIVE_URL="$REPO_RAW/warp-wireproxy-native.sh"
 MANAGER_URL="$REPO_RAW/warpwp.sh"
@@ -15,6 +15,8 @@ CRON_FILE="/etc/cron.d/warp-wireproxy-check"
 LOG_FILE="/var/log/warp-check.log"
 LOCK_FILE="/var/lock/warpwp-check.lock"
 DEFAULT_SCAN_COUNT="25"
+QUICK_SCAN_COUNT="15"
+DEEP_SCAN_COUNT="150"
 DEFAULT_SCHEDULE="*/10 * * * *"
 SOCKS_HOST="127.0.0.1"
 SOCKS_PORT="40000"
@@ -174,16 +176,22 @@ status() {
   print_memo_short
 }
 
-repair_endpoint() {
+run_scan() {
+  local count="$1" label="$2"
   need_root
   [[ -x "$NATIVE_BIN" ]] || update_local_scripts
   ensure_flock
+  log "$label: запускаю проверку/ремонт WARP с scan-count=$count"
   if command -v flock >/dev/null 2>&1; then
-    flock -n "$LOCK_FILE" "$NATIVE_BIN" --check --scan-count "$DEFAULT_SCAN_COUNT" || warn "Другая проверка уже выполняется или check завершился с ошибкой."
+    flock -n "$LOCK_FILE" "$NATIVE_BIN" --check --scan-count "$count" || warn "Другая проверка уже выполняется или scan завершился с ошибкой."
   else
-    "$NATIVE_BIN" --check --scan-count "$DEFAULT_SCAN_COUNT"
+    "$NATIVE_BIN" --check --scan-count "$count"
   fi
 }
+
+repair_endpoint() { run_scan "$DEFAULT_SCAN_COUNT" "Обычный scan"; }
+quick_scan() { run_scan "$QUICK_SCAN_COUNT" "Quick scan"; }
+deep_scan() { run_scan "$DEEP_SCAN_COUNT" "Deep scan"; }
 
 doctor() {
   echo "============================================================"
@@ -385,7 +393,9 @@ print_commands() {
   warpwp --install-cron  # переустановить только cron с flock lock
   warpwp --status        # состояние
   warpwp --doctor        # диагностика
-  warpwp --check         # ремонт endpoint
+  warpwp --check         # обычный ремонт endpoint, scan-count=$DEFAULT_SCAN_COUNT
+  warpwp --quick-scan    # быстрый ремонт endpoint, scan-count=$QUICK_SCAN_COUNT
+  warpwp --deep-scan     # глубокий ремонт endpoint, scan-count=$DEEP_SCAN_COUNT
   warpwp --xray          # блоки для 3x-ui/Xray
   warpwp --zapret        # строки для zapret4rocket
   warpwp --memo          # полная памятка
@@ -409,10 +419,11 @@ Routing в 3x-ui вести на outboundTag: WARP
 Текущий WARP endpoint: $ep
 Для zapret4rocket минимум UDP-порт endpoint: $port
 Рекомендуемая строка zapret: NFQWS_PORTS_UDP=$ZAPRET_PORTS
+Быстрый scan: warpwp --quick-scan
+Обычный scan: warpwp --check
+Глубокий scan: warpwp --deep-scan
 Блоки Xray: warpwp --xray
 Строки zapret: warpwp --zapret
-Ремонт endpoint: warpwp --check
-Переустановить только cron: warpwp --install-cron
 Диагностика: warpwp --doctor
 Логи автопроверки: tail -n 80 $LOG_FILE
 ------------------------------------------------------------
@@ -431,7 +442,9 @@ print_memo_full() {
 
   warpwp --status
   warpwp --doctor
+  warpwp --quick-scan
   warpwp --check
+  warpwp --deep-scan
   warpwp --install-cron
   warpwp --xray
   warpwp --zapret
@@ -462,6 +475,8 @@ menu() {
 11) Переустановить только cron/check с flock lock
 12) Показать блоки для 3x-ui / Xray
 13) Показать строки для zapret4rocket
+14) Quick scan endpoint
+15) Deep scan endpoint
  0) Выход
 ============================================================
 EOF_MENU
@@ -481,6 +496,8 @@ EOF_MENU
       11) install_cron_check; pause ;;
       12) print_xray; pause ;;
       13) print_zapret; pause ;;
+      14) quick_scan; pause ;;
+      15) deep_scan; pause ;;
       0) exit 0 ;;
       *) echo "Неверный пункт"; sleep 1 ;;
     esac
@@ -495,6 +512,8 @@ case "${1:-}" in
   --status) status ;;
   --doctor) doctor ;;
   --check|--repair) repair_endpoint ;;
+  --quick-scan|--quick) quick_scan ;;
+  --deep-scan|--deep) deep_scan ;;
   --logs) show_logs ;;
   --xray) print_xray ;;
   --zapret) print_zapret ;;
