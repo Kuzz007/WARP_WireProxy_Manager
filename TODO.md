@@ -29,6 +29,7 @@
 - [x] `warpwp --doctor`.
 - [x] `warpwp --install-cron`.
 - [x] атомарный self-update через временный файл + `mv`.
+- [x] GitHub Actions workflow: `bash -n` + `shellcheck` для всех `*.sh`.
 
 ## Возможные следующие задачи
 
@@ -37,4 +38,3 @@
 - [ ] `warpwp --status-json` — JSON-статус для внешних панелей/автоматизации.
 - [ ] systemd timer как альтернатива cron.
 - [ ] автообновление README-команд при изменении версии.
-- [ ] GitHub Actions shellcheck для проверки bash-скриптов перед коммитом.
