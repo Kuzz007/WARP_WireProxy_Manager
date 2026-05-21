@@ -4,7 +4,7 @@
 
 set -Eeuo pipefail
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 REPO_RAW="https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main"
 NATIVE_URL="$REPO_RAW/warp-wireproxy-native.sh"
 MANAGER_URL="$REPO_RAW/warpwp.sh"
@@ -118,6 +118,12 @@ update_local_scripts() {
 install_cron_check() {
   need_root
   ensure_flock
+
+  if [[ ! -x "$NATIVE_BIN" ]]; then
+    warn "Локальный native-скрипт не найден. Сначала обновляю скрипты."
+    update_local_scripts
+  fi
+
   log "Устанавливаю cron-автопроверку WARP endpoint..."
 
   local check_cmd
@@ -252,16 +258,27 @@ doctor() {
     [[ -n "$trace" ]] && echo "$trace"
   fi
 
-  [[ -f "$CRON_FILE" ]] && check_ok "cron установлен: $CRON_FILE" || check_warn "cron не установлен"
+  if [[ -f "$CRON_FILE" ]]; then
+    check_ok "cron установлен: $CRON_FILE"
+    if grep -q "flock -n $LOCK_FILE" "$CRON_FILE" 2>/dev/null; then
+      check_ok "cron использует flock lock"
+    else
+      check_warn "cron установлен, но без flock lock. Исправить: warpwp --install-cron"
+    fi
+  else
+    check_warn "cron не установлен"
+  fi
+
   [[ -f "$LOG_FILE" ]] && check_ok "лог существует: $LOG_FILE" || check_warn "лог пока отсутствует"
 
   echo
   echo "Итог: OK=$ok_count WARN=$warn_count FAIL=$fail_count"
-  if [[ "$fail_count" -gt 0 ]]; then
+  if [[ "$fail_count" -gt 0 || "$warn_count" -gt 0 ]]; then
     echo
     echo "Рекомендуемые действия:"
-    echo "  warpwp --check     # попробовать починить endpoint"
-    echo "  warpwp --install   # переустановить/обновить WARP + cron"
+    echo "  warpwp --check        # попробовать починить endpoint"
+    echo "  warpwp --install-cron # пересоздать только cron с flock lock"
+    echo "  warpwp --install      # переустановить/обновить WARP + cron"
   fi
 }
 
@@ -354,6 +371,9 @@ print_commands() {
 Установить / обновить всё:
   warpwp --install
 
+Переустановить только cron с flock lock:
+  warpwp --install-cron
+
 Проверить состояние:
   warpwp --status
 
@@ -392,6 +412,7 @@ Routing в 3x-ui вести на outboundTag: WARP
 Для zapret4rocket минимум UDP-порт endpoint: $port
 Рекомендуемая строка zapret: NFQWS_PORTS_UDP=$ZAPRET_PORTS
 Ремонт endpoint: warpwp --check
+Переустановить только cron: warpwp --install-cron
 Диагностика: warpwp --doctor
 Логи автопроверки: tail -n 80 $LOG_FILE
 ------------------------------------------------------------
@@ -469,13 +490,14 @@ print_memo_full() {
 4) Полезные команды
 ------------------------------------------------------------
 
-  warpwp --status    # состояние
-  warpwp --doctor    # расширенная диагностика
-  warpwp --check     # проверить и починить endpoint
-  warpwp --logs      # логи
-  warpwp --update    # обновить скрипты
-  warpwp --remove    # безопасно удалить
-  warpwp --purge     # жёсткая очистка
+  warpwp --status        # состояние
+  warpwp --doctor        # расширенная диагностика
+  warpwp --check         # проверить и починить endpoint
+  warpwp --install-cron  # пересоздать только cron с flock lock
+  warpwp --logs          # логи
+  warpwp --update        # обновить скрипты
+  warpwp --remove        # безопасно удалить
+  warpwp --purge         # жёсткая очистка
 
 EOF
 }
@@ -497,6 +519,7 @@ menu() {
  8) Показать памятку для 3x-ui / zapret
  9) Doctor / расширенная диагностика
 10) PURGE / жёсткая очистка WARP-следов
+11) Переустановить только cron/check с flock lock
  0) Выход
 ============================================================
 EOF
@@ -513,6 +536,7 @@ EOF
       8) print_memo_full; pause ;;
       9) doctor; pause ;;
       10) purge_all; pause ;;
+      11) install_cron_check; pause ;;
       0) exit 0 ;;
       *) echo "Неверный пункт"; sleep 1 ;;
     esac
@@ -525,6 +549,9 @@ case "${1:-}" in
     ;;
   --install)
     install_or_update_all
+    ;;
+  --install-cron|--cron)
+    install_cron_check
     ;;
   --update|--self-update)
     update_local_scripts
