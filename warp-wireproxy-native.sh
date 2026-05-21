@@ -2,23 +2,21 @@
 # warp-wireproxy-native.sh
 # Полностью неинтерактивный установщик Cloudflare WARP + wireproxy + SOCKS5 для 3x-ui/Xray.
 #
-# Важно:
+# Что делает:
 #   - не использует fscarmen/menu.sh;
 #   - сам регистрирует WARP-устройство через API Cloudflare;
 #   - сам создаёт /etc/wireguard/warp.conf и /etc/wireguard/proxy.conf;
 #   - сам ставит wireproxy из GitHub Releases, а если релиз не найден — пробует собрать через Go;
 #   - сам создаёт systemd service;
 #   - сам сканирует WARP endpoint'ы и выбирает самый быстрый, где warp=on;
+#   - умеет режим --check: быстро проверить WARP и при поломке подменить endpoint;
 #   - в конце печатает готовые блоки для 3x-ui/Xray и zapret4rocket.
 #
-# Запуск:
+# Установка:
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Kuzz007/test/main/warp-wireproxy-native.sh)
 #
-# Примеры:
-#   bash warp-wireproxy-native.sh
-#   bash warp-wireproxy-native.sh --scan-count 80
-#   bash warp-wireproxy-native.sh --port 40000
-#   bash warp-wireproxy-native.sh --endpoints "162.159.192.244:1843 162.159.195.100:1010"
+# Проверка/ремонт endpoint:
+#   bash <(curl -fsSL https://raw.githubusercontent.com/Kuzz007/test/main/warp-wireproxy-native.sh) --check
 
 set -Eeuo pipefail
 
@@ -27,6 +25,7 @@ SOCKS_PORT="40000"
 SCAN_COUNT="50"
 USE_CUSTOM_ENDPOINTS="0"
 FORCE_REGISTER="0"
+CHECK_ONLY="0"
 
 WG_DIR="/etc/wireguard"
 WARP_CONF="$WG_DIR/warp.conf"
@@ -70,6 +69,7 @@ usage() {
   bash $0 [опции]
 
 Опции:
+  --check                   Только проверить WARP. Если warp=on нет — пересканировать и подменить endpoint.
   --port <порт>             Локальный SOCKS5-порт. По умолчанию: 40000
   --host <хост>             Bind-адрес SOCKS5. По умолчанию: 127.0.0.1
   --scan-count <число>      Сколько случайных endpoint'ов проверить. По умолчанию: 50
@@ -80,15 +80,24 @@ usage() {
 
 Примеры:
   bash $0
+  bash $0 --check
+  bash $0 --check --scan-count 25
   bash $0 --scan-count 100
   bash $0 --ports "2408,1843,1010,500,1701,4500"
   bash $0 --endpoints "162.159.192.244:1843 162.159.195.100:1010"
+
+Для cron/systemd можно использовать:
+  bash $0 --check --scan-count 25
 EOF
 }
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
+      --check)
+        CHECK_ONLY="1"
+        shift
+        ;;
       --port)
         SOCKS_PORT="${2:-}"
         shift 2
@@ -313,7 +322,7 @@ register_warp_account() {
   chmod 600 "$PRIVATE_KEY_FILE"
 
   body="$(python3 - "$public_key" "$tos" <<'PY'
-import json, sys, uuid
+import json, sys
 pub, tos = sys.argv[1], sys.argv[2]
 print(json.dumps({
   'key': pub,
@@ -447,7 +456,22 @@ EOF
   ok "wireproxy.service создан."
 }
 
+ensure_service_exists() {
+  if [[ -f "$SERVICE_FILE" ]] || systemctl list-unit-files 2>/dev/null | grep -q '^wireproxy\.service'; then
+    return 0
+  fi
+  if find_wireproxy_bin >/dev/null 2>&1 && [[ -f "$PROXY_CONF" ]]; then
+    create_service
+    return 0
+  fi
+  return 1
+}
+
 restart_wireproxy() {
+  ensure_service_exists || {
+    err "wireproxy.service отсутствует, а $PROXY_CONF или бинарник wireproxy не найден."
+    exit 1
+  }
   systemctl restart wireproxy
   sleep 2
 }
@@ -461,10 +485,25 @@ check_port() {
   fi
 }
 
+get_current_endpoint() {
+  grep -i '^Endpoint' "$PROXY_CONF" 2>/dev/null | head -n1 | awk -F= '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}'
+}
+
+quick_warp_check() {
+  local trace
+  trace="$(curl -m 8 -s -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" "$TEST_URL" | grep -E 'ip=|colo=|loc=|warp=' || true)"
+  if echo "$trace" | grep -q '^warp=on'; then
+    BEST_TRACE="$trace"
+    return 0
+  fi
+  BEST_TRACE="$trace"
+  return 1
+}
+
 generate_endpoint_candidates() {
   : > "$CANDIDATES_FILE"
   local current_endpoint
-  current_endpoint="$(grep -i '^Endpoint' "$WARP_CONF" | head -n1 | awk -F= '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}')"
+  current_endpoint="$(get_current_endpoint || true)"
   [[ -n "$current_endpoint" ]] && echo "$current_endpoint" >> "$CANDIDATES_FILE"
 
   if [[ "$USE_CUSTOM_ENDPOINTS" == "1" ]]; then
@@ -585,6 +624,36 @@ final_check() {
   ok "WARP работает: warp=on"
 }
 
+run_check_and_repair() {
+  log "Режим проверки: проверяю текущий WARP без переустановки."
+  if [[ ! -f "$PROXY_CONF" || ! -f "$WARP_CONF" ]]; then
+    err "Не найдены $PROXY_CONF или $WARP_CONF. Сначала запусти обычную установку без --check."
+    exit 1
+  fi
+
+  ensure_wireproxy_installed
+  ensure_service_exists || create_service
+  systemctl restart wireproxy || true
+  sleep 2
+  check_port
+
+  if quick_warp_check; then
+    ok "WARP живой, endpoint менять не нужно."
+    echo "$BEST_TRACE"
+    echo
+    echo "Текущий endpoint: $(get_current_endpoint)"
+    exit 0
+  fi
+
+  warn "WARP не отвечает или нет warp=on. Запускаю быстрый перескан endpoint'ов..."
+  backup_existing
+  select_best_endpoint
+  final_check
+  echo
+  ok "Endpoint был автоматически заменён на рабочий: $BEST_ENDPOINT"
+  print_result
+}
+
 print_result() {
   local endpoint_port
   endpoint_port="${BEST_ENDPOINT##*:}"
@@ -658,13 +727,16 @@ zapret4rocket
   NFQWS_PORTS_UDP=$ZAPRET_PORTS
 
 ------------------------------------------------------------
-Проверки
+Проверки и авто-ремонт
 ------------------------------------------------------------
 
 grep -i '^Endpoint' /etc/wireguard/warp.conf
 systemctl status wireproxy --no-pager -l | head -60
 ss -lntup | grep ':$SOCKS_PORT'
 curl -m 10 -s -x socks5h://$SOCKS_HOST:$SOCKS_PORT https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|colo=|loc=|warp='
+
+Проверить и при поломке автоматически заменить endpoint:
+  bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/test/main/warp-wireproxy-native.sh?nocache=\$(date +%s)") --check --scan-count 25
 
 Бэкапы:
   /root/warp-wireproxy-native-backup/
@@ -681,6 +753,12 @@ main() {
   parse_args "$@"
   require_root
   install_deps
+
+  if [[ "$CHECK_ONLY" == "1" ]]; then
+    run_check_and_repair
+    exit 0
+  fi
+
   ensure_wireproxy_installed
   backup_existing
   register_warp_account
