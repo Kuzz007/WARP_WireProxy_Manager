@@ -10,10 +10,15 @@
 - [x] `warpwp --zapret`
   - Выводит только информацию для zapret4rocket.
 
+- [x] `warpwp --wg-paste`
+  - Позволяет вставить содержимое WireGuard `.conf` прямо в терминал.
+  - Не требует загружать файл на сервер.
+  - После вставки ждёт короткую паузу и выводит JSON для окна 3x-ui/Xray.
+
 - [x] `warpwp --wg-json FILE`
-  - Конвертирует обычный WireGuard `.conf` в JSON для окна 3x-ui/Xray.
+  - Конвертирует обычный WireGuard `.conf` из файла в JSON для окна 3x-ui/Xray.
   - Алиас: `warpwp --wg-convert FILE`.
-  - Поддерживает `PrivateKey`, `Address`, `MTU`, `PublicKey`, `Endpoint`, `AllowedIPs`, `PersistentKeepalive`.
+  - Поддерживает `PrivateKey`, `Address`, `MTU`, `PublicKey`, `PresharedKey`, `Endpoint`, `AllowedIPs`, `PersistentKeepalive`.
 
 - [x] `warpwp --quick-scan`
   - Быстрый ремонт endpoint.
