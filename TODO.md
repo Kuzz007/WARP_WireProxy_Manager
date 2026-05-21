@@ -10,6 +10,11 @@
 - [x] `warpwp --zapret`
   - Выводит только информацию для zapret4rocket.
 
+- [x] `warpwp --wg-json FILE`
+  - Конвертирует обычный WireGuard `.conf` в JSON для окна 3x-ui/Xray.
+  - Алиас: `warpwp --wg-convert FILE`.
+  - Поддерживает `PrivateKey`, `Address`, `MTU`, `PublicKey`, `Endpoint`, `AllowedIPs`, `PersistentKeepalive`.
+
 - [x] `warpwp --quick-scan`
   - Быстрый ремонт endpoint.
   - Использует `scan-count=15`.
