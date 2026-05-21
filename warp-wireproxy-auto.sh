@@ -5,23 +5,15 @@
 # What it does:
 #   - installs dependencies
 #   - installs WARP WireProxy via fscarmen/warp if missing
+#   - creates wireproxy.service if binary/configs exist but systemd unit is missing
 #   - ensures wireproxy SOCKS5 listens on 127.0.0.1:40000
 #   - tests WARP endpoints
 #   - selects the fastest endpoint with warp=on
 #   - prints ready-to-paste 3x-ui/Xray outbound/routing blocks
 #   - prints zapret4rocket UDP ports
 #
-# Tested target:
-#   Debian/Ubuntu VPS with systemd.
-#
 # Run:
 #   bash <(curl -fsSL https://raw.githubusercontent.com/Kuzz007/test/main/warp-wireproxy-auto.sh)
-#
-# Options:
-#   --port 40000
-#   --host 127.0.0.1
-#   --no-install
-#   --endpoints "162.159.192.244:1843 162.159.195.100:1010"
 
 set -Eeuo pipefail
 
@@ -31,6 +23,7 @@ INSTALL_WARP="1"
 
 WARP_CONF="/etc/wireguard/warp.conf"
 PROXY_CONF="/etc/wireguard/proxy.conf"
+SERVICE_FILE="/etc/systemd/system/wireproxy.service"
 
 FSCARMEN_MENU_URL="https://gitlab.com/fscarmen/warp/-/raw/main/menu.sh"
 TEST_URL="https://www.cloudflare.com/cdn-cgi/trace"
@@ -40,7 +33,6 @@ RESULT_FILE="/tmp/warp_endpoint_results.$$"
 BEST_ENDPOINT=""
 BEST_TIME=""
 BEST_TRACE=""
-BEST_IP=""
 BEST_COLO=""
 BEST_LOC=""
 
@@ -127,9 +119,6 @@ require_root() {
 
 install_deps_apt() {
   apt-get update -y
-
-  # Do not install package "awk" on Ubuntu/Debian:
-  # it is a virtual package on Ubuntu 24.04 and has no installation candidate.
   DEBIAN_FRONTEND=noninteractive apt-get install -y \
     curl \
     wget \
@@ -140,54 +129,25 @@ install_deps_apt() {
     coreutils \
     iproute2 \
     systemd
-
-  # Some minimal systems may not link awk automatically.
   if ! command -v awk >/dev/null 2>&1 && command -v gawk >/dev/null 2>&1; then
     ln -sf "$(command -v gawk)" /usr/local/bin/awk
   fi
 }
 
 install_deps_dnf() {
-  dnf install -y \
-    curl \
-    wget \
-    ca-certificates \
-    grep \
-    sed \
-    gawk \
-    coreutils \
-    iproute \
-    systemd
+  dnf install -y curl wget ca-certificates grep sed gawk coreutils iproute systemd
 }
 
 install_deps_yum() {
-  yum install -y \
-    curl \
-    wget \
-    ca-certificates \
-    grep \
-    sed \
-    gawk \
-    coreutils \
-    iproute \
-    systemd
+  yum install -y curl wget ca-certificates grep sed gawk coreutils iproute systemd
 }
 
 install_deps_apk() {
-  apk add --no-cache \
-    curl \
-    wget \
-    ca-certificates \
-    grep \
-    sed \
-    gawk \
-    coreutils \
-    iproute2
+  apk add --no-cache curl wget ca-certificates grep sed gawk coreutils iproute2
 }
 
 detect_os_and_install_deps() {
   log "Installing/checking dependencies..."
-
   if command -v apt-get >/dev/null 2>&1; then
     install_deps_apt
   elif command -v dnf >/dev/null 2>&1; then
@@ -197,40 +157,98 @@ detect_os_and_install_deps() {
   elif command -v apk >/dev/null 2>&1; then
     install_deps_apk
   else
-    warn "Unknown package manager."
-    warn "Make sure these commands exist: curl wget grep sed awk ip ss systemctl."
+    warn "Unknown package manager. Make sure curl wget grep sed awk ip ss systemctl are installed."
   fi
 
   local missing=()
-  for cmd in curl wget grep sed awk ip ss; do
+  for cmd in curl wget grep sed awk ip ss systemctl; do
     if ! command -v "$cmd" >/dev/null 2>&1; then
       missing+=("$cmd")
     fi
   done
-
   if [[ "${#missing[@]}" -gt 0 ]]; then
     err "Missing required commands: ${missing[*]}"
     exit 1
   fi
-
   ok "Dependencies are ready."
 }
 
-wireproxy_exists() {
-  command -v wireproxy >/dev/null 2>&1 \
-    || [[ -x /usr/bin/wireproxy ]] \
-    || systemctl list-unit-files 2>/dev/null | grep -q '^wireproxy\.service'
+find_wireproxy_bin() {
+  if command -v wireproxy >/dev/null 2>&1; then
+    command -v wireproxy
+    return 0
+  fi
+  for p in /usr/bin/wireproxy /usr/local/bin/wireproxy /opt/bin/wireproxy; do
+    if [[ -x "$p" ]]; then
+      echo "$p"
+      return 0
+    fi
+  done
+  return 1
+}
+
+wireproxy_unit_exists() {
+  systemctl list-unit-files 2>/dev/null | grep -q '^wireproxy\.service' || [[ -f "$SERVICE_FILE" ]] || [[ -f /usr/lib/systemd/system/wireproxy.service ]]
+}
+
+wireproxy_install_exists() {
+  find_wireproxy_bin >/dev/null 2>&1 && [[ -f "$WARP_CONF" && -f "$PROXY_CONF" ]]
+}
+
+create_wireproxy_service_if_missing() {
+  local bin
+  if wireproxy_unit_exists; then
+    ok "wireproxy.service exists."
+    return 0
+  fi
+
+  if ! bin="$(find_wireproxy_bin)"; then
+    warn "wireproxy binary not found, cannot create service yet."
+    return 1
+  fi
+
+  if [[ ! -f "$PROXY_CONF" ]]; then
+    warn "$PROXY_CONF not found, cannot create service yet."
+    return 1
+  fi
+
+  log "wireproxy binary/configs exist, but systemd unit is missing. Creating $SERVICE_FILE"
+
+  cat > "$SERVICE_FILE" <<EOF
+[Unit]
+Description=WireProxy for WARP
+Documentation=https://github.com/pufferffish/wireproxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=$bin -c $PROXY_CONF
+Restart=always
+RestartSec=3
+LimitNOFILE=1048576
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable wireproxy >/dev/null 2>&1 || true
+  ok "Created and enabled wireproxy.service"
 }
 
 install_wireproxy_if_needed() {
-  if wireproxy_exists && [[ -f "$WARP_CONF" && -f "$PROXY_CONF" ]]; then
-    ok "wireproxy and config files already exist."
+  if wireproxy_install_exists; then
+    ok "wireproxy binary and config files already exist."
+    create_wireproxy_service_if_missing || true
     return 0
   fi
 
   if [[ "$INSTALL_WARP" != "1" ]]; then
     err "wireproxy/config not found and --no-install was used."
-    err "Need: $WARP_CONF and $PROXY_CONF"
+    err "Need binary wireproxy plus:"
+    err "$WARP_CONF"
+    err "$PROXY_CONF"
     exit 1
   fi
 
@@ -248,30 +266,30 @@ install_wireproxy_if_needed() {
     exit 1
   }
 
-  if [[ ! -f "$WARP_CONF" || ! -f "$PROXY_CONF" ]]; then
-    err "After install, expected configs were not found:"
-    err "$WARP_CONF"
-    err "$PROXY_CONF"
+  if ! wireproxy_install_exists; then
+    err "After install, expected wireproxy binary/configs were not found."
+    err "Check:"
+    err "  command -v wireproxy"
+    err "  ls -la /etc/wireguard/"
     exit 1
   fi
 
-  ok "fscarmen WireProxy installation completed."
+  create_wireproxy_service_if_missing || true
+  ok "WireProxy installation is ready."
 }
 
 backup_configs() {
   mkdir -p /root/warp-wireproxy-backup
   local ts
   ts="$(date +%Y%m%d-%H%M%S)"
-
   [[ -f "$WARP_CONF" ]] && cp -a "$WARP_CONF" "/root/warp-wireproxy-backup/warp.conf.$ts.bak"
   [[ -f "$PROXY_CONF" ]] && cp -a "$PROXY_CONF" "/root/warp-wireproxy-backup/proxy.conf.$ts.bak"
-
+  [[ -f "$SERVICE_FILE" ]] && cp -a "$SERVICE_FILE" "/root/warp-wireproxy-backup/wireproxy.service.$ts.bak"
   ok "Backups saved to /root/warp-wireproxy-backup/"
 }
 
 set_endpoint() {
   local ep="$1"
-
   if grep -qi '^Endpoint[[:space:]]*=' "$WARP_CONF"; then
     sed -i "s#^Endpoint[[:space:]]*=.*#Endpoint = $ep#I" "$WARP_CONF"
   else
@@ -321,13 +339,18 @@ EOF
 }
 
 restart_wireproxy() {
-  if systemctl list-unit-files 2>/dev/null | grep -q '^wireproxy\.service'; then
+  create_wireproxy_service_if_missing || true
+
+  if wireproxy_unit_exists; then
     systemctl daemon-reload || true
+    systemctl enable wireproxy >/dev/null 2>&1 || true
     systemctl restart wireproxy
     sleep 2
   else
-    err "wireproxy.service not found."
-    err "Check install logs or run without --no-install."
+    err "wireproxy.service not found and could not be created."
+    err "Diagnostics:"
+    err "  command -v wireproxy"
+    err "  ls -la /etc/wireguard/"
     exit 1
   fi
 }
@@ -338,6 +361,8 @@ check_port() {
   else
     warn "SOCKS5 port is not visible with ss. Current listeners:"
     ss -lntup 2>/dev/null | grep -E 'wireproxy|40000|1080' || true
+    warn "wireproxy status:"
+    systemctl status wireproxy --no-pager -l | head -80 || true
   fi
 }
 
@@ -416,7 +441,6 @@ select_best_endpoint() {
 
   BEST_ENDPOINT="$(printf '%s' "$best_line" | awk -F'\t' '{print $1}')"
   BEST_TIME="$(printf '%s' "$best_line" | awk -F'\t' '{print $3}')"
-  BEST_IP="$(printf '%s' "$best_line" | awk -F'\t' '{print $4}')"
   BEST_COLO="$(printf '%s' "$best_line" | awk -F'\t' '{print $5}')"
   BEST_LOC="$(printf '%s' "$best_line" | awk -F'\t' '{print $6}')"
 
@@ -428,7 +452,6 @@ select_best_endpoint() {
 
 final_check() {
   log "Final WARP check..."
-
   BEST_TRACE="$(curl -m 15 -s -x "socks5h://${SOCKS_HOST}:${SOCKS_PORT}" "$TEST_URL" | grep -E 'ip=|colo=|loc=|warp=' || true)"
   echo "$BEST_TRACE"
 
