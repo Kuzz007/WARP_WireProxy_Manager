@@ -10,6 +10,8 @@
 #   4) обновить локальные скрипты
 #   5) удалить WARP/wireproxy/cron
 #   6) показать логи
+#   7) показать команды
+#   8) показать памятку для 3x-ui/zapret
 #   0) выход
 #
 # Быстрая установка менеджера:
@@ -31,6 +33,7 @@ DEFAULT_SCHEDULE="*/10 * * * *"
 
 SOCKS_HOST="127.0.0.1"
 SOCKS_PORT="40000"
+ZAPRET_PORTS="443,2408,1843,1010,500,1701,4500,4443,8443,8095"
 
 log()  { printf '\033[1;36m[ИНФО]\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m[ОК]\033[0m %s\n' "$*"; }
@@ -67,6 +70,20 @@ need_curl() {
 pause() {
   echo
   read -rp "Нажми Enter для продолжения... " _ || true
+}
+
+current_endpoint() {
+  grep -i '^Endpoint' /etc/wireguard/warp.conf 2>/dev/null | head -n1 | awk -F= '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}' || true
+}
+
+current_endpoint_port() {
+  local ep
+  ep="$(current_endpoint)"
+  if [[ -n "$ep" && "$ep" == *:* ]]; then
+    echo "${ep##*:}"
+  else
+    echo "1843/2408/1010"
+  fi
 }
 
 install_manager() {
@@ -118,6 +135,8 @@ install_or_update_all() {
   "$NATIVE_BIN"
   install_cron_check
   ok "Установка/обновление завершены."
+  echo
+  print_memo_short
 }
 
 status() {
@@ -148,6 +167,8 @@ status() {
   else
     echo "cron-файл не найден: $CRON_FILE"
   fi
+  echo
+  print_memo_short
 }
 
 repair_endpoint() {
@@ -230,13 +251,159 @@ print_commands() {
 Открыть меню:
   warpwp
 
+Установить / обновить всё:
+  warpwp --install
+
 Проверить и починить endpoint вручную:
   warpwp --check
 
 Проверить состояние:
   warpwp --status
 
+Показать памятку для 3x-ui/zapret:
+  warpwp --memo
+
 Удалить WARP/wireproxy:
+  warpwp --remove
+
+EOF
+}
+
+print_memo_short() {
+  local ep port
+  ep="$(current_endpoint)"
+  port="$(current_endpoint_port)"
+  [[ -z "$ep" ]] && ep="ещё не установлен"
+  cat <<EOF
+------------------------------------------------------------
+ПАМЯТКА
+SOCKS5 для 3x-ui/Xray: socks5://$SOCKS_HOST:$SOCKS_PORT
+Routing в 3x-ui вести на outboundTag: WARP
+Текущий WARP endpoint: $ep
+Для zapret4rocket минимум UDP-порт endpoint: $port
+Рекомендуемая строка zapret: NFQWS_PORTS_UDP=$ZAPRET_PORTS
+Ремонт endpoint: warpwp --check
+Логи автопроверки: tail -n 80 $LOG_FILE
+------------------------------------------------------------
+EOF
+}
+
+print_memo_full() {
+  local ep port
+  ep="$(current_endpoint)"
+  port="$(current_endpoint_port)"
+  [[ -z "$ep" ]] && ep="ещё не установлен"
+  cat <<EOF
+============================================================
+ПАМЯТКА ДЛЯ 3x-ui / Xray / zapret4rocket
+============================================================
+
+1) Локальный SOCKS5 WARP
+
+  socks5://$SOCKS_HOST:$SOCKS_PORT
+
+Проверка:
+
+  curl -m 10 -s -x socks5h://$SOCKS_HOST:$SOCKS_PORT https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|colo=|loc=|warp='
+
+Хороший результат:
+
+  warp=on
+
+------------------------------------------------------------
+2) 3x-ui / Xray outbounds
+------------------------------------------------------------
+
+{
+  "tag": "WARP-socks5",
+  "protocol": "socks",
+  "settings": {
+    "servers": [
+      {
+        "address": "$SOCKS_HOST",
+        "port": $SOCKS_PORT
+      }
+    ]
+  }
+},
+{
+  "tag": "WARP",
+  "protocol": "freedom",
+  "settings": {
+    "domainStrategy": "UseIPv4"
+  },
+  "proxySettings": {
+    "tag": "WARP-socks5"
+  }
+}
+
+Важно: routing правила направлять на outboundTag "WARP", не на "WARP-socks5".
+
+------------------------------------------------------------
+3) Пример routing для OpenAI/ChatGPT
+------------------------------------------------------------
+
+{
+  "type": "field",
+  "domain": [
+    "domain:openai.com",
+    "domain:chatgpt.com",
+    "domain:oaistatic.com",
+    "domain:oaiusercontent.com"
+  ],
+  "outboundTag": "WARP"
+}
+
+------------------------------------------------------------
+4) zapret4rocket
+------------------------------------------------------------
+
+Текущий endpoint:
+
+  $ep
+
+Минимальный UDP-порт текущего endpoint:
+
+  $port
+
+Рекомендуемая строка:
+
+  NFQWS_PORTS_UDP=$ZAPRET_PORTS
+
+Открыть конфиг:
+
+  nano /opt/zapret/config
+
+Перезапуск:
+
+  /opt/zapret/init.d/sysv/zapret restart
+
+или:
+
+  systemctl restart zapret
+
+------------------------------------------------------------
+5) Полезные команды
+------------------------------------------------------------
+
+Проверить состояние:
+
+  warpwp --status
+
+Проверить и починить endpoint:
+
+  warpwp --check
+
+Показать логи:
+
+  warpwp --logs
+
+Обновить локальные скрипты:
+
+  warpwp --update
+
+Удалить WARP/wireproxy/cron:
+
   warpwp --remove
 
 EOF
@@ -256,9 +423,11 @@ menu() {
  5) Удалить WARP / wireproxy / cron
  6) Показать логи
  7) Показать команды
+ 8) Показать памятку для 3x-ui / zapret
  0) Выход
 ============================================================
 EOF
+    print_memo_short
     read -rp "Выбери пункт: " choice
     case "$choice" in
       1) install_or_update_all; pause ;;
@@ -268,6 +437,7 @@ EOF
       5) remove_all; pause ;;
       6) show_logs; pause ;;
       7) print_commands; pause ;;
+      8) print_memo_full; pause ;;
       0) exit 0 ;;
       *) echo "Неверный пункт"; sleep 1 ;;
     esac
@@ -292,6 +462,9 @@ case "${1:-}" in
     ;;
   --remove)
     remove_all
+    ;;
+  --memo)
+    print_memo_full
     ;;
   --commands)
     print_commands
