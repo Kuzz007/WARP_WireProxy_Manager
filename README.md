@@ -6,7 +6,7 @@
 3x-ui / Xray → socks5://127.0.0.1:40000 → wireproxy → Cloudflare WARP → internet
 ```
 
-Проект рассчитан на VPS с Linux/systemd. Цель — быстро поднять Cloudflare WARP как локальный SOCKS5 outbound для 3x-ui/Xray, автоматически подобрать рабочий WARP endpoint и поддерживать его живым через cron-проверку.
+Проект рассчитан на VPS с Linux/systemd. Цель — быстро поднять Cloudflare WARP как локальный SOCKS5 outbound для 3x-ui/Xray, автоматически подобрать рабочий WARP endpoint и поддерживать его живым через cron или systemd timer.
 
 Репозиторий:
 
@@ -17,7 +17,7 @@ https://github.com/Kuzz007/WARP_WireProxy_Manager
 Текущая версия:
 
 ```text
-warpwp v1.1.5
+warpwp v1.1.6
 warp-wireproxy-native.sh v1.1.0
 ```
 
@@ -42,32 +42,23 @@ curl -fsSL \
 chmod +x /usr/local/bin/warpwp
 ```
 
-Открыть меню:
-
-```bash
-warpwp
-```
-
 Установить/обновить WARP + wireproxy + cron:
 
 ```bash
 warpwp --install
 ```
 
+Опционально включить systemd timer вместо/рядом с cron:
+
+```bash
+warpwp --install-timer
+```
+
 Проверить состояние:
 
 ```bash
 warpwp --doctor
-```
-
-Хороший итог:
-
-```text
-OK=19 WARN=0 FAIL=0
-warp=on
-wireproxy active
-cron установлен
-cron использует flock lock
+warpwp --status-json
 ```
 
 ---
@@ -77,25 +68,22 @@ cron использует flock lock
 - Устанавливает WARP + `wireproxy` без интерактивного меню `fscarmen`.
 - Сам регистрирует WARP-устройство через Cloudflare API.
 - Создаёт `warp.conf`, `proxy.conf` и `wireproxy.service`.
-- Поднимает локальный SOCKS5:
-
-```text
-127.0.0.1:40000
-```
-
-- Сканирует WARP endpoint'ы Cloudflare.
-- Выбирает рабочий endpoint, где Cloudflare trace показывает `warp=on`.
-- Поддерживает три режима ремонта endpoint'ов:
-  - `warpwp --quick-scan` — быстрый scan, `scan-count=15`;
-  - `warpwp --check` — обычный scan, `scan-count=25`;
-  - `warpwp --deep-scan` — глубокий scan, `scan-count=150`.
-- Кэширует хорошие endpoint'ы: `/etc/wireguard/warp-endpoints.good`.
-- Кэширует плохие endpoint'ы: `/etc/wireguard/warp-endpoints.bad`.
+- Поднимает локальный SOCKS5 `127.0.0.1:40000`.
+- Сканирует WARP endpoint'ы Cloudflare и выбирает рабочий endpoint с `warp=on`.
+- Поддерживает режимы ремонта endpoint'ов:
+  - `warpwp --quick-scan` — `scan-count=15`;
+  - `warpwp --check` — `scan-count=25`;
+  - `warpwp --deep-scan` — `scan-count=150`.
+- Кэширует endpoint'ы:
+  - good: `/etc/wireguard/warp-endpoints.good`;
+  - bad: `/etc/wireguard/warp-endpoints.bad`.
 - Использует blacklist: endpoint с 3+ ошибками не проверяется 24 часа.
-- Использует `flock`, чтобы cron/check не запускались параллельно.
-- Показывает готовые блоки для 3x-ui/Xray.
-- Показывает готовые строки для zapret4rocket.
-- Выводит машинно-читаемый JSON-статус через `warpwp --status-json`.
+- Использует `flock`, чтобы cron/check/timer не запускались параллельно.
+- Поддерживает cron-автопроверку.
+- Поддерживает optional systemd timer.
+- Показывает блоки для 3x-ui/Xray.
+- Показывает строки для zapret4rocket.
+- Выводит JSON-статус через `warpwp --status-json`.
 
 ---
 
@@ -103,7 +91,7 @@ cron использует flock lock
 
 ```text
 ============================================================
- WARP + wireproxy manager v1.1.5
+ WARP + wireproxy manager v1.1.6
 ============================================================
  1) Установить / обновить WARP + wireproxy + cron
  2) Проверить состояние
@@ -121,6 +109,9 @@ cron использует flock lock
 14) Quick scan endpoint
 15) Deep scan endpoint
 16) Показать JSON-статус
+17) Установить systemd timer
+18) Статус systemd timer
+19) Удалить systemd timer
  0) Выход
 ============================================================
 ```
@@ -135,30 +126,71 @@ cron использует flock lock
 | `warpwp --install` | Установить/обновить WARP + wireproxy + cron |
 | `warpwp --install-cron` | Переустановить только cron с `flock` lock |
 | `warpwp --cron` | Алиас для `--install-cron` |
+| `warpwp --install-timer` | Установить/включить systemd timer |
+| `warpwp --timer` | Алиас для `--install-timer` |
+| `warpwp --timer-status` | Показать статус systemd timer |
+| `warpwp --remove-timer` | Удалить systemd timer, не трогая cron |
 | `warpwp --status` | Показать состояние |
 | `warpwp --status-json` | Показать JSON-статус |
 | `warpwp --json` | Алиас для `--status-json` |
 | `warpwp --doctor` | Расширенная диагностика |
 | `warpwp --check` | Обычный ремонт endpoint, `scan-count=25` |
 | `warpwp --quick-scan` | Быстрый ремонт endpoint, `scan-count=15` |
-| `warpwp --quick` | Алиас для `--quick-scan` |
 | `warpwp --deep-scan` | Глубокий ремонт endpoint, `scan-count=150` |
-| `warpwp --deep` | Алиас для `--deep-scan` |
 | `warpwp --xray` | Показать блоки для 3x-ui/Xray |
 | `warpwp --zapret` | Показать строки для zapret4rocket |
-| `warpwp --logs` | Показать логи cron и `wireproxy` |
+| `warpwp --logs` | Показать логи cron/timer и `wireproxy` |
 | `warpwp --memo` | Показать полную памятку |
 | `warpwp --update` | Обновить локальные скрипты |
-| `warpwp --self-update` | То же самое, что `--update` |
 | `warpwp --version` | Показать версию менеджера |
 | `warpwp --remove` | Безопасно удалить компоненты менеджера |
 | `warpwp --purge` | Жёстко удалить WARP/wireproxy/wgcf/warp-cli/fscarmen-следы |
 
 ---
 
-## JSON-статус
+## Systemd timer
 
-Вывести машинно-читаемый статус:
+Cron остаётся дефолтным вариантом после `warpwp --install`. Systemd timer можно включить отдельно:
+
+```bash
+warpwp --install-timer
+```
+
+Будут созданы:
+
+```text
+/etc/systemd/system/warp-wireproxy-check.service
+/etc/systemd/system/warp-wireproxy-check.timer
+/var/log/warp-timer-check.log
+```
+
+Timer запускает check каждые 10 минут:
+
+```text
+OnBootSec=2min
+OnUnitActiveSec=10min
+AccuracySec=30s
+Persistent=true
+```
+
+Проверить timer:
+
+```bash
+warpwp --timer-status
+systemctl status warp-wireproxy-check.timer --no-pager -l
+systemctl list-timers --all 'warp-wireproxy-check.timer'
+journalctl -u warp-wireproxy-check.service -n 80 --no-pager
+```
+
+Удалить timer, не трогая cron:
+
+```bash
+warpwp --remove-timer
+```
+
+---
+
+## JSON-статус
 
 ```bash
 warpwp --status-json
@@ -170,61 +202,53 @@ warpwp --status-json
 warpwp --json
 ```
 
-Пример структуры:
+JSON включает:
 
-```json
-{
-  "manager_version": "1.1.5",
-  "native_version": "1.1.0",
-  "healthy": true,
-  "installed": true,
-  "service": {
-    "name": "wireproxy",
-    "state": "active",
-    "active": true
-  },
-  "socks5": {
-    "host": "127.0.0.1",
-    "port": 40000,
-    "listening": true
-  },
-  "warp": {
-    "endpoint": "188.114.97.249:500",
-    "endpoint_port": "500",
-    "ip": "104.28.x.x",
-    "colo": "ARN",
-    "loc": "RU",
-    "status": "on",
-    "on": true
-  },
-  "cron": {
-    "installed": true,
-    "uses_flock": true
-  }
-}
+```text
+manager_version
+native_version
+healthy
+installed
+service
+socks5
+warp
+cron
+timer
+logs
+cache
 ```
 
-Поле `healthy=true` означает, что WARP установлен, `wireproxy` активен, SOCKS5 слушает, Cloudflare trace даёт `warp=on`, cron установлен и использует `flock`.
+`healthy=true` означает, что WARP установлен, `wireproxy` активен, SOCKS5 слушает, Cloudflare trace даёт `warp=on`, и есть хотя бы один механизм автопроверки: cron или active systemd timer.
+
+---
+
+## Cron-автопроверка
+
+После `warpwp --install` или `warpwp --install-cron` создаётся:
+
+```text
+/etc/cron.d/warp-wireproxy-check
+```
+
+Пример:
+
+```cron
+*/10 * * * * root flock -n /var/lock/warpwp-check.lock /usr/local/bin/warp-wireproxy-native.sh --check --scan-count 25 >> /var/log/warp-check.log 2>&1
+```
+
+Лог:
+
+```bash
+tail -n 80 /var/log/warp-check.log
+```
 
 ---
 
 ## Режимы scan / ремонта endpoint
 
-Быстрый scan:
-
 ```bash
 warpwp --quick-scan
-```
-
-Обычный scan:
-
-```bash
 warpwp --check
-```
-
-Глубокий scan:
-
-```bash
 warpwp --deep-scan
 ```
 
@@ -249,11 +273,14 @@ warpwp --deep-scan
 /etc/wireguard/warp-endpoints.bad
 /etc/systemd/system/wireproxy.service
 /etc/cron.d/warp-wireproxy-check
+/etc/systemd/system/warp-wireproxy-check.service
+/etc/systemd/system/warp-wireproxy-check.timer
 /var/log/warp-check.log
+/var/log/warp-timer-check.log
 /var/lock/warpwp-check.lock
 ```
 
-Бэкапы создаются здесь:
+Бэкапы:
 
 ```text
 /root/warp-wireproxy-native-backup/
@@ -261,132 +288,10 @@ warpwp --deep-scan
 
 ---
 
-## Cron-автопроверка и flock lock
-
-После `warpwp --install` или `warpwp --install-cron` создаётся cron-файл:
-
-```text
-/etc/cron.d/warp-wireproxy-check
-```
-
-Пример содержимого:
-
-```cron
-*/10 * * * * root flock -n /var/lock/warpwp-check.lock /usr/local/bin/warp-wireproxy-native.sh --check --scan-count 25 >> /var/log/warp-check.log 2>&1
-```
-
-Что делает cron:
-
-1. Проверяет локальный SOCKS5 `127.0.0.1:40000`.
-2. Делает запрос к Cloudflare trace.
-3. Если есть `warp=on` — ничего не меняет.
-4. Если WARP не отвечает — проверяет текущий endpoint.
-5. Проверяет хорошие endpoint'ы из кэша.
-6. Проверяет fallback endpoint'ы.
-7. При необходимости запускает random scan.
-8. Выбирает рабочий endpoint.
-9. Подменяет `Endpoint` в `warp.conf` и `proxy.conf`.
-10. Перезапускает `wireproxy`.
-
-Логи:
-
-```bash
-tail -n 80 /var/log/warp-check.log
-```
-
----
-
-## Кэш endpoint'ов
-
-```bash
-cat /etc/wireguard/warp-endpoints.good
-cat /etc/wireguard/warp-endpoints.bad 2>/dev/null
-```
-
-Формат `good`:
-
-```text
-endpoint    time_total    colo    loc    timestamp
-```
-
-Формат `bad`:
-
-```text
-endpoint    fail_count    timestamp
-```
-
-Если endpoint получил 3+ ошибки, он пропускается 24 часа.
-
----
-
-## Doctor / диагностика
-
-```bash
-warpwp --doctor
-```
-
-Проверяет root, зависимости, `wireproxy.service`, SOCKS5-порт, Cloudflare trace, cron, `flock`, логи и основные конфиги.
-
-Пример здорового состояния:
-
-```text
-[OK] wireproxy active
-[OK] SOCKS5 порт 40000 слушает
-[OK] Cloudflare trace: warp=on
-[OK] cron установлен: /etc/cron.d/warp-wireproxy-check
-[OK] cron использует flock lock
-Итог: OK=19 WARN=0 FAIL=0
-```
-
----
-
-## Проверка работы WARP
-
-```bash
-curl -m 10 -s -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|colo=|loc=|warp='
-```
-
-Хороший результат:
-
-```text
-warp=on
-```
-
----
-
 ## 3x-ui / Xray
-
-Вывести блоки:
 
 ```bash
 warpwp --xray
-```
-
-Outbounds:
-
-```json
-{
-  "tag": "WARP-socks5",
-  "protocol": "socks",
-  "settings": {
-    "servers": [
-      {
-        "address": "127.0.0.1",
-        "port": 40000
-      }
-    ]
-  }
-},
-{
-  "tag": "WARP",
-  "protocol": "freedom",
-  "settings": {
-    "domainStrategy": "UseIPv4"
-  },
-  "proxySettings": {
-    "tag": "WARP-socks5"
-  }
-}
 ```
 
 Routing вести на:
@@ -398,8 +303,6 @@ Routing вести на:
 ---
 
 ## zapret4rocket
-
-Вывести строки:
 
 ```bash
 warpwp --zapret
@@ -415,24 +318,18 @@ NFQWS_PORTS_UDP=443,2408,1843,1010,500,1701,4500,4443,8443,8095
 
 ---
 
-## Ручной запуск native-скрипта
-
-Установка напрямую:
+## Проверки
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh?nocache=$(date +%s)")
+warpwp --doctor
+warpwp --status-json
+curl -m 10 -s -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|colo=|loc=|warp='
 ```
 
-Проверить и починить endpoint:
+Хороший результат:
 
-```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh?nocache=$(date +%s)") --check --scan-count 25
-```
-
-Глубокий scan:
-
-```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh?nocache=$(date +%s)") --check --scan-count 150
+```text
+warp=on
 ```
 
 ---
@@ -454,38 +351,18 @@ curl -fsSL \
 chmod +x /usr/local/bin/warpwp
 ```
 
-Проверить версии:
-
-```bash
-warpwp --version
-/usr/local/bin/warp-wireproxy-native.sh --version
-```
-
 ---
 
-## Удаление и переустановка
-
-Безопасное удаление:
+## Удаление
 
 ```bash
 warpwp --remove
-```
-
-Полная очистка:
-
-```bash
 warpwp --purge
-```
-
-После очистки:
-
-```bash
-warpwp --install
 ```
 
 ---
 
-## CI / проверка скриптов
+## CI
 
 Workflow:
 
@@ -493,7 +370,7 @@ Workflow:
 .github/workflows/shellcheck.yml
 ```
 
-Проверяет все `*.sh`:
+Проверяет:
 
 ```text
 bash -n
