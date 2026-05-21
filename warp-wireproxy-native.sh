@@ -9,16 +9,19 @@
 #   - сам ставит wireproxy из GitHub Releases, а если релиз не найден — пробует собрать через Go;
 #   - сам создаёт systemd service;
 #   - сам сканирует WARP endpoint'ы и выбирает самый быстрый, где warp=on;
+#   - кэширует хорошие и плохие endpoint'ы;
 #   - умеет режим --check: быстро проверить WARP и при поломке подменить endpoint;
 #   - в конце печатает готовые блоки для 3x-ui/Xray и zapret4rocket.
 #
 # Установка:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/Kuzz007/test/main/warp-wireproxy-native.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh)
 #
 # Проверка/ремонт endpoint:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/Kuzz007/test/main/warp-wireproxy-native.sh) --check
+#   bash <(curl -fsSL https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh) --check
 
 set -Eeuo pipefail
+
+VERSION="1.1.0"
 
 SOCKS_HOST="127.0.0.1"
 SOCKS_PORT="40000"
@@ -32,6 +35,8 @@ WARP_CONF="$WG_DIR/warp.conf"
 PROXY_CONF="$WG_DIR/proxy.conf"
 ACCOUNT_JSON="$WG_DIR/warp-account.json"
 PRIVATE_KEY_FILE="$WG_DIR/warp-private.key"
+GOOD_ENDPOINTS_FILE="$WG_DIR/warp-endpoints.good"
+BAD_ENDPOINTS_FILE="$WG_DIR/warp-endpoints.bad"
 SERVICE_FILE="/etc/systemd/system/wireproxy.service"
 TEST_URL="https://www.cloudflare.com/cdn-cgi/trace"
 RESULT_FILE="/tmp/warp_native_results.$$"
@@ -76,6 +81,7 @@ usage() {
   --ports "список"          Порты для сканирования, через пробел или запятую
   --endpoints "список"      Проверить конкретные endpoint'ы вместо автосканирования
   --force-register          Создать новый WARP-аккаунт, даже если старый уже есть
+  --version                 Показать версию
   -h, --help                Показать справку
 
 Примеры:
@@ -128,6 +134,10 @@ parse_args() {
       --force-register)
         FORCE_REGISTER="1"
         shift
+        ;;
+      --version|-v)
+        echo "warp-wireproxy-native.sh v$VERSION"
+        exit 0
         ;;
       -h|--help)
         usage
@@ -299,6 +309,8 @@ backup_existing() {
   [[ -f "$PROXY_CONF" ]] && cp -a "$PROXY_CONF" "/root/warp-wireproxy-native-backup/proxy.conf.$ts.bak"
   [[ -f "$ACCOUNT_JSON" ]] && cp -a "$ACCOUNT_JSON" "/root/warp-wireproxy-native-backup/warp-account.json.$ts.bak"
   [[ -f "$SERVICE_FILE" ]] && cp -a "$SERVICE_FILE" "/root/warp-wireproxy-native-backup/wireproxy.service.$ts.bak"
+  [[ -f "$GOOD_ENDPOINTS_FILE" ]] && cp -a "$GOOD_ENDPOINTS_FILE" "/root/warp-wireproxy-native-backup/warp-endpoints.good.$ts.bak"
+  [[ -f "$BAD_ENDPOINTS_FILE" ]] && cp -a "$BAD_ENDPOINTS_FILE" "/root/warp-wireproxy-native-backup/warp-endpoints.bad.$ts.bak"
   ok "Бэкапы сохранены в /root/warp-wireproxy-native-backup/"
 }
 
@@ -490,47 +502,116 @@ get_current_endpoint() {
 }
 
 quick_warp_check() {
-  local trace
+  local trace endpoint
   trace="$(curl -m 8 -s -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" "$TEST_URL" | grep -E 'ip=|colo=|loc=|warp=' || true)"
   if echo "$trace" | grep -q '^warp=on'; then
     BEST_TRACE="$trace"
+    endpoint="$(get_current_endpoint || true)"
+    [[ -n "$endpoint" ]] && remember_good_endpoint "$endpoint" "0" "quick" "quick"
     return 0
   fi
   BEST_TRACE="$trace"
   return 1
 }
 
+remember_good_endpoint() {
+  local ep="${1:-}" time="${2:-0}" colo="${3:-unknown}" loc="${4:-unknown}" ts
+  [[ -z "$ep" ]] && return 0
+  mkdir -p "$WG_DIR"
+  ts="$(date +%s)"
+  touch "$GOOD_ENDPOINTS_FILE" "$BAD_ENDPOINTS_FILE"
+  awk -v ep="$ep" -F'\t' '$1 != ep {print}' "$GOOD_ENDPOINTS_FILE" > "${GOOD_ENDPOINTS_FILE}.tmp" 2>/dev/null || true
+  mv "${GOOD_ENDPOINTS_FILE}.tmp" "$GOOD_ENDPOINTS_FILE" 2>/dev/null || true
+  printf '%s\t%s\t%s\t%s\t%s\n' "$ep" "$time" "$colo" "$loc" "$ts" >> "$GOOD_ENDPOINTS_FILE"
+  sort -t $'\t' -k2,2n "$GOOD_ENDPOINTS_FILE" | head -n 30 > "${GOOD_ENDPOINTS_FILE}.tmp" || true
+  mv "${GOOD_ENDPOINTS_FILE}.tmp" "$GOOD_ENDPOINTS_FILE" 2>/dev/null || true
+  awk -v ep="$ep" -F'\t' '$1 != ep {print}' "$BAD_ENDPOINTS_FILE" > "${BAD_ENDPOINTS_FILE}.tmp" 2>/dev/null || true
+  mv "${BAD_ENDPOINTS_FILE}.tmp" "$BAD_ENDPOINTS_FILE" 2>/dev/null || true
+}
+
+remember_bad_endpoint() {
+  local ep="${1:-}" ts count
+  [[ -z "$ep" ]] && return 0
+  mkdir -p "$WG_DIR"
+  touch "$BAD_ENDPOINTS_FILE"
+  ts="$(date +%s)"
+  count="$(awk -v ep="$ep" -F'\t' '$1 == ep {print $2}' "$BAD_ENDPOINTS_FILE" 2>/dev/null | tail -n1)"
+  count="${count:-0}"
+  count=$((count + 1))
+  awk -v ep="$ep" -F'\t' '$1 != ep {print}' "$BAD_ENDPOINTS_FILE" > "${BAD_ENDPOINTS_FILE}.tmp" 2>/dev/null || true
+  mv "${BAD_ENDPOINTS_FILE}.tmp" "$BAD_ENDPOINTS_FILE" 2>/dev/null || true
+  printf '%s\t%s\t%s\n' "$ep" "$count" "$ts" >> "$BAD_ENDPOINTS_FILE"
+  tail -n 200 "$BAD_ENDPOINTS_FILE" > "${BAD_ENDPOINTS_FILE}.tmp" || true
+  mv "${BAD_ENDPOINTS_FILE}.tmp" "$BAD_ENDPOINTS_FILE" 2>/dev/null || true
+}
+
+is_bad_endpoint() {
+  local ep="${1:-}" now ts count age
+  [[ -z "$ep" || ! -f "$BAD_ENDPOINTS_FILE" ]] && return 1
+  now="$(date +%s)"
+  count="$(awk -v ep="$ep" -F'\t' '$1 == ep {print $2}' "$BAD_ENDPOINTS_FILE" | tail -n1)"
+  ts="$(awk -v ep="$ep" -F'\t' '$1 == ep {print $3}' "$BAD_ENDPOINTS_FILE" | tail -n1)"
+  count="${count:-0}"
+  ts="${ts:-0}"
+  age=$((now - ts))
+  [[ "$count" -ge 3 && "$age" -lt 86400 ]]
+}
+
+append_candidate() {
+  local ep="${1:-}"
+  [[ -z "$ep" ]] && return 0
+  if is_bad_endpoint "$ep"; then
+    return 0
+  fi
+  if ! grep -qxF "$ep" "$CANDIDATES_FILE" 2>/dev/null; then
+    echo "$ep" >> "$CANDIDATES_FILE"
+  fi
+}
+
 generate_endpoint_candidates() {
   : > "$CANDIDATES_FILE"
-  local current_endpoint
+  local current_endpoint ep
   current_endpoint="$(get_current_endpoint || true)"
-  [[ -n "$current_endpoint" ]] && echo "$current_endpoint" >> "$CANDIDATES_FILE"
+  [[ -n "$current_endpoint" ]] && append_candidate "$current_endpoint"
+
+  if [[ -f "$GOOD_ENDPOINTS_FILE" ]]; then
+    log "Добавляю последние хорошие endpoint'ы из кэша: $GOOD_ENDPOINTS_FILE"
+    while IFS=$'\t' read -r ep _rest; do
+      append_candidate "$ep"
+    done < <(sort -t $'\t' -k2,2n "$GOOD_ENDPOINTS_FILE" | head -n 20)
+  fi
 
   if [[ "$USE_CUSTOM_ENDPOINTS" == "1" ]]; then
     log "Использую пользовательский список endpoint'ов."
-    printf '%s\n' "${CUSTOM_ENDPOINTS[@]}" >> "$CANDIDATES_FILE"
-    sort -u "$CANDIDATES_FILE" -o "$CANDIDATES_FILE"
+    for ep in "${CUSTOM_ENDPOINTS[@]}"; do
+      append_candidate "$ep"
+    done
     return 0
   fi
 
-  log "Генерирую $SCAN_COUNT случайных WARP endpoint'ов из диапазонов Cloudflare..."
+  append_candidate "engage.cloudflareclient.com:2408"
+  append_candidate "162.159.192.244:1843"
+  append_candidate "162.159.195.100:1010"
+  append_candidate "162.159.193.10:2408"
+  append_candidate "188.114.96.10:2408"
+  append_candidate "188.114.97.10:2408"
+
+  log "Генерирую до $SCAN_COUNT случайных WARP endpoint'ов из диапазонов Cloudflare..."
   log "Порты: ${WARP_PORTS[*]}"
 
-  local made=0 attempts=0
+  local made=0 attempts=0 prefix last_octet port
   while [[ "$made" -lt "$SCAN_COUNT" && "$attempts" -lt $((SCAN_COUNT * 10 + 200)) ]]; do
     attempts=$((attempts + 1))
-    local prefix="${WARP_PREFIXES[$((RANDOM % ${#WARP_PREFIXES[@]}))]}"
-    local last_octet="$((RANDOM % 256))"
-    local port="${WARP_PORTS[$((RANDOM % ${#WARP_PORTS[@]}))]}"
-    local ep="${prefix}.${last_octet}:${port}"
-    if ! grep -qxF "$ep" "$CANDIDATES_FILE"; then
+    prefix="${WARP_PREFIXES[$((RANDOM % ${#WARP_PREFIXES[@]}))]}"
+    last_octet="$((RANDOM % 256))"
+    port="${WARP_PORTS[$((RANDOM % ${#WARP_PORTS[@]}))]}"
+    ep="${prefix}.${last_octet}:${port}"
+    if ! grep -qxF "$ep" "$CANDIDATES_FILE" 2>/dev/null && ! is_bad_endpoint "$ep"; then
       echo "$ep" >> "$CANDIDATES_FILE"
       made=$((made + 1))
     fi
   done
 
-  echo "engage.cloudflareclient.com:2408" >> "$CANDIDATES_FILE"
-  sort -u "$CANDIDATES_FILE" -o "$CANDIDATES_FILE"
   ok "Кандидатов endpoint: $(wc -l < "$CANDIDATES_FILE" | tr -d ' ')"
 }
 
@@ -548,6 +629,7 @@ test_endpoint() {
 
   if [[ "$rc" -ne 0 ]]; then
     printf '%s\tFAIL\tcurl_rc=%s\t-\t-\t-\t-\n' "$ep" "$rc" >> "$RESULT_FILE"
+    remember_bad_endpoint "$ep"
     rm -f "$trace_file"
     return 1
   fi
@@ -562,11 +644,13 @@ test_endpoint() {
 
   if [[ "$http_code" == "200" && "$warp" == "on" && -n "$time_total" ]]; then
     printf '%s\tOK\t%s\t%s\t%s\t%s\t%s\n' "$ep" "$time_total" "$ip" "$colo" "$loc" "$warp" >> "$RESULT_FILE"
+    remember_good_endpoint "$ep" "$time_total" "$colo" "$loc"
     rm -f "$trace_file"
     return 0
   fi
 
   printf '%s\tFAIL\thttp=%s time=%s ip=%s colo=%s loc=%s warp=%s\n' "$ep" "$http_code" "$time_total" "$ip" "$colo" "$loc" "$warp" >> "$RESULT_FILE"
+  remember_bad_endpoint "$ep"
   rm -f "$trace_file"
   return 1
 }
@@ -575,7 +659,7 @@ select_best_endpoint() {
   generate_endpoint_candidates
   : > "$RESULT_FILE"
 
-  log "Проверяю endpoint'ы. Это может занять несколько минут..."
+  log "Проверяю endpoint'ы. Кэш good/bad используется первым, затем fallback и random scan."
   local ep
   while IFS= read -r ep; do
     [[ -z "$ep" ]] && continue
@@ -609,6 +693,7 @@ select_best_endpoint() {
   BEST_LOC="$(printf '%s' "$best_line" | awk -F'\t' '{print $6}')"
   set_endpoint "$BEST_ENDPOINT"
   restart_wireproxy
+  remember_good_endpoint "$BEST_ENDPOINT" "$BEST_TIME" "$BEST_COLO" "$BEST_LOC"
   ok "Выбран endpoint: $BEST_ENDPOINT time_total=$BEST_TIME colo=$BEST_COLO loc=$BEST_LOC"
 }
 
@@ -642,6 +727,7 @@ run_check_and_repair() {
     echo "$BEST_TRACE"
     echo
     echo "Текущий endpoint: $(get_current_endpoint)"
+    echo "Кэш good endpoint'ов: $GOOD_ENDPOINTS_FILE"
     exit 0
   fi
 
@@ -736,7 +822,11 @@ ss -lntup | grep ':$SOCKS_PORT'
 curl -m 10 -s -x socks5h://$SOCKS_HOST:$SOCKS_PORT https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|colo=|loc=|warp='
 
 Проверить и при поломке автоматически заменить endpoint:
-  bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/test/main/warp-wireproxy-native.sh?nocache=\$(date +%s)") --check --scan-count 25
+  bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh?nocache=\$(date +%s)") --check --scan-count 25
+
+Кэш endpoint'ов:
+  good: $GOOD_ENDPOINTS_FILE
+  bad:  $BAD_ENDPOINTS_FILE
 
 Бэкапы:
   /root/warp-wireproxy-native-backup/
