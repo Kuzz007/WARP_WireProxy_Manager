@@ -8,6 +8,12 @@
 
 Проект рассчитан на VPS с Linux/systemd. Основная цель — быстро поднять WARP как локальный SOCKS5 outbound для 3x-ui/Xray, автоматически подобрать рабочий endpoint Cloudflare WARP и поддерживать его живым через cron-проверку.
 
+Репозиторий:
+
+```text
+https://github.com/Kuzz007/WARP_WireProxy_Manager
+```
+
 ---
 
 ## Что умеет
@@ -48,7 +54,7 @@ warpwp
 Установить менеджер:
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/test/main/warpwp.sh?nocache=$(date +%s)") --install-manager
+bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warpwp.sh?nocache=$(date +%s)") --install-manager
 ```
 
 Открыть меню:
@@ -301,25 +307,25 @@ systemctl restart zapret
 Если менеджер не нужен, можно запустить основной установщик напрямую:
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/test/main/warp-wireproxy-native.sh?nocache=$(date +%s)")
+bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh?nocache=$(date +%s)")
 ```
 
 Проверить и починить endpoint:
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/test/main/warp-wireproxy-native.sh?nocache=$(date +%s)") --check --scan-count 25
+bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh?nocache=$(date +%s)") --check --scan-count 25
 ```
 
 Более глубокое сканирование:
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/test/main/warp-wireproxy-native.sh?nocache=$(date +%s)") --scan-count 100
+bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh?nocache=$(date +%s)") --scan-count 100
 ```
 
 С ручными endpoint'ами:
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/test/main/warp-wireproxy-native.sh?nocache=$(date +%s)") --endpoints "162.159.192.244:1843 162.159.195.100:1010"
+bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh?nocache=$(date +%s)") --endpoints "162.159.192.244:1843 162.159.195.100:1010"
 ```
 
 ---
