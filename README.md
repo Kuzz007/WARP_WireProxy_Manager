@@ -17,7 +17,7 @@ https://github.com/Kuzz007/WARP_WireProxy_Manager
 Текущая основная версия:
 
 ```text
-warpwp v1.1.3
+warpwp v1.1.4
 warp-wireproxy-native.sh v1.1.0
 ```
 
@@ -93,6 +93,10 @@ cron использует flock lock
 warp=on
 ```
 
+- Поддерживает три режима ремонта endpoint'ов:
+  - `warpwp --quick-scan` — быстрый scan, `scan-count=15`;
+  - `warpwp --check` — обычный scan, `scan-count=25`;
+  - `warpwp --deep-scan` — глубокий scan, `scan-count=150`.
 - Кэширует хорошие endpoint'ы:
 
 ```text
@@ -124,7 +128,7 @@ warpwp
 
 ```text
 ============================================================
- WARP + wireproxy manager v1.1.3
+ WARP + wireproxy manager v1.1.4
 ============================================================
  1) Установить / обновить WARP + wireproxy + cron
  2) Проверить состояние
@@ -139,6 +143,8 @@ warpwp
 11) Переустановить только cron/check с flock lock
 12) Показать блоки для 3x-ui / Xray
 13) Показать строки для zapret4rocket
+14) Quick scan endpoint
+15) Deep scan endpoint
  0) Выход
 ============================================================
 ```
@@ -155,7 +161,11 @@ warpwp
 | `warpwp --cron` | Алиас для `--install-cron` |
 | `warpwp --status` | Показать состояние |
 | `warpwp --doctor` | Расширенная диагностика |
-| `warpwp --check` | Проверить WARP и при необходимости заменить endpoint |
+| `warpwp --check` | Обычный ремонт endpoint, `scan-count=25` |
+| `warpwp --quick-scan` | Быстрый ремонт endpoint, `scan-count=15` |
+| `warpwp --quick` | Алиас для `--quick-scan` |
+| `warpwp --deep-scan` | Глубокий ремонт endpoint, `scan-count=150` |
+| `warpwp --deep` | Алиас для `--deep-scan` |
 | `warpwp --xray` | Показать только блоки для 3x-ui/Xray |
 | `warpwp --zapret` | Показать только строки для zapret4rocket |
 | `warpwp --logs` | Показать логи cron и `wireproxy` |
@@ -165,6 +175,40 @@ warpwp
 | `warpwp --version` | Показать версию менеджера |
 | `warpwp --remove` | Безопасно удалить компоненты менеджера |
 | `warpwp --purge` | Жёстко удалить WARP/wireproxy/wgcf/warp-cli/fscarmen-следы |
+
+---
+
+## Режимы scan / ремонта endpoint
+
+Быстрый scan:
+
+```bash
+warpwp --quick-scan
+```
+
+Использует `scan-count=15`. Подходит для быстрой ручной проверки, когда WARP в целом живой, но хочется быстро перепроверить endpoint.
+
+Обычный scan:
+
+```bash
+warpwp --check
+```
+
+Использует `scan-count=25`. Это стандартный режим, который также используется cron-задачей.
+
+Глубокий scan:
+
+```bash
+warpwp --deep-scan
+```
+
+Использует `scan-count=150`. Подходит, если обычный ремонт не нашёл хороший endpoint или нужна более тщательная переоценка WARP-точек.
+
+Все режимы используют `flock` lock:
+
+```text
+/var/lock/warpwp-check.lock
+```
 
 ---
 
@@ -456,7 +500,7 @@ bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Mana
 Более глубокое сканирование:
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh?nocache=$(date +%s)") --scan-count 100
+bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warp-wireproxy-native.sh?nocache=$(date +%s)") --check --scan-count 150
 ```
 
 С ручными endpoint'ами:
