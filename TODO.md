@@ -21,13 +21,22 @@
 - [x] `warpwp --status-json`
   - JSON-статус для внешних панелей/автоматизации.
   - Алиас: `warpwp --json`.
-  - Включает версии, health, service, socks5, WARP trace, cron/flock, timer, логи и cache paths.
+  - Включает версии, health, scheduler, service, socks5, WARP trace, cron/flock, timer, логи и cache paths.
 
 - [x] systemd timer как альтернатива cron.
-  - `warpwp --install-timer`
-  - `warpwp --timer-status`
-  - `warpwp --remove-timer`
-  - Timer запускает endpoint check каждые 10 минут.
+  - `warpwp --install-timer [минуты]`.
+  - `warpwp --timer-status`.
+  - `warpwp --remove-timer`.
+  - Timer запускает endpoint check с выбранным интервалом.
+
+- [x] Взаимоисключающие scheduler modes.
+  - `warpwp --install-cron` включает cron и отключает timer.
+  - `warpwp --install-timer` включает timer и отключает cron.
+  - `warpwp --scheduler-status` показывает `cron`, `systemd_timer`, `both` или `none`.
+
+- [x] Запрос интервала timer в минутах.
+  - По умолчанию 10 минут.
+  - Можно передать без интерактива: `warpwp --install-timer 15`.
 
 - [x] `flock` lock для cron/check/timer.
 - [x] good endpoint cache: `/etc/wireguard/warp-endpoints.good`.
