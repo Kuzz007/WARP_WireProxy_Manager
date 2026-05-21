@@ -4,7 +4,7 @@
 
 set -Eeuo pipefail
 
-VERSION="1.1.4"
+VERSION="1.1.5"
 REPO_RAW="https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main"
 NATIVE_URL="$REPO_RAW/warp-wireproxy-native.sh"
 MANAGER_URL="$REPO_RAW/warpwp.sh"
@@ -81,6 +81,20 @@ pause() {
   read -rp "Нажми Enter для продолжения... " _ || true
 }
 
+json_escape() {
+  local s="${1:-}"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\r'/}"
+  s="${s//$'\t'/\\t}"
+  printf '%s' "$s"
+}
+
+json_bool() {
+  if [[ "${1:-}" == "1" || "${1:-}" == "true" ]]; then printf 'true'; else printf 'false'; fi
+}
+
 current_endpoint() {
   grep -i '^Endpoint' /etc/wireguard/warp.conf 2>/dev/null | head -n1 | awk -F= '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}' || true
 }
@@ -89,6 +103,12 @@ current_endpoint_port() {
   local ep
   ep="$(current_endpoint)"
   if [[ -n "$ep" && "$ep" == *:* ]]; then echo "${ep##*:}"; else echo "1843/2408/1010"; fi
+}
+
+native_version() {
+  if [[ -x "$NATIVE_BIN" ]]; then
+    "$NATIVE_BIN" --version 2>/dev/null | awk '{print $2}' || true
+  fi
 }
 
 install_manager() {
@@ -174,6 +194,81 @@ status() {
   [[ -f "$CRON_FILE" ]] && cat "$CRON_FILE" || echo "cron-файл не найден: $CRON_FILE"
   echo
   print_memo_short
+}
+
+status_json() {
+  local ep ep_port native_ver service_active service_state socks_listening cron_installed cron_flock log_exists manager_installed native_installed
+  local trace ip colo loc warp installed healthy
+
+  ep="$(current_endpoint)"
+  ep_port="$(current_endpoint_port)"
+  native_ver="$(native_version)"
+  service_state="$(systemctl is-active wireproxy 2>/dev/null || true)"
+  [[ "$service_state" == "active" ]] && service_active="1" || service_active="0"
+  ss -lntup 2>/dev/null | grep -q ":$SOCKS_PORT" && socks_listening="1" || socks_listening="0"
+  [[ -f "$CRON_FILE" ]] && cron_installed="1" || cron_installed="0"
+  grep -q "flock -n $LOCK_FILE" "$CRON_FILE" 2>/dev/null && cron_flock="1" || cron_flock="0"
+  [[ -f "$LOG_FILE" ]] && log_exists="1" || log_exists="0"
+  [[ -x "$MANAGER_BIN" ]] && manager_installed="1" || manager_installed="0"
+  [[ -x "$NATIVE_BIN" ]] && native_installed="1" || native_installed="0"
+  [[ -f /etc/wireguard/warp.conf && -f /etc/wireguard/proxy.conf ]] && installed="1" || installed="0"
+
+  trace="$(curl -m 10 -s -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null || true)"
+  ip="$(echo "$trace" | awk -F= '$1=="ip"{print $2; exit}')"
+  colo="$(echo "$trace" | awk -F= '$1=="colo"{print $2; exit}')"
+  loc="$(echo "$trace" | awk -F= '$1=="loc"{print $2; exit}')"
+  warp="$(echo "$trace" | awk -F= '$1=="warp"{print $2; exit}')"
+
+  if [[ "$installed" == "1" && "$service_active" == "1" && "$socks_listening" == "1" && "$warp" == "on" && "$cron_installed" == "1" && "$cron_flock" == "1" ]]; then
+    healthy="1"
+  else
+    healthy="0"
+  fi
+
+  cat <<EOF_JSON
+{
+  "manager_version": "$(json_escape "$VERSION")",
+  "native_version": "$(json_escape "$native_ver")",
+  "healthy": $(json_bool "$healthy"),
+  "installed": $(json_bool "$installed"),
+  "manager_installed": $(json_bool "$manager_installed"),
+  "native_installed": $(json_bool "$native_installed"),
+  "service": {
+    "name": "wireproxy",
+    "state": "$(json_escape "$service_state")",
+    "active": $(json_bool "$service_active")
+  },
+  "socks5": {
+    "host": "$(json_escape "$SOCKS_HOST")",
+    "port": $SOCKS_PORT,
+    "listening": $(json_bool "$socks_listening")
+  },
+  "warp": {
+    "endpoint": "$(json_escape "$ep")",
+    "endpoint_port": "$(json_escape "$ep_port")",
+    "ip": "$(json_escape "$ip")",
+    "colo": "$(json_escape "$colo")",
+    "loc": "$(json_escape "$loc")",
+    "status": "$(json_escape "$warp")",
+    "on": $( [[ "$warp" == "on" ]] && printf 'true' || printf 'false' )
+  },
+  "cron": {
+    "file": "$(json_escape "$CRON_FILE")",
+    "installed": $(json_bool "$cron_installed"),
+    "uses_flock": $(json_bool "$cron_flock"),
+    "lock_file": "$(json_escape "$LOCK_FILE")",
+    "schedule": "$(json_escape "$DEFAULT_SCHEDULE")"
+  },
+  "logs": {
+    "file": "$(json_escape "$LOG_FILE")",
+    "exists": $(json_bool "$log_exists")
+  },
+  "cache": {
+    "good_file": "/etc/wireguard/warp-endpoints.good",
+    "bad_file": "/etc/wireguard/warp-endpoints.bad"
+  }
+}
+EOF_JSON
 }
 
 run_scan() {
@@ -392,6 +487,7 @@ print_commands() {
   warpwp --install       # установить / обновить всё
   warpwp --install-cron  # переустановить только cron с flock lock
   warpwp --status        # состояние
+  warpwp --status-json   # JSON-статус
   warpwp --doctor        # диагностика
   warpwp --check         # обычный ремонт endpoint, scan-count=$DEFAULT_SCAN_COUNT
   warpwp --quick-scan    # быстрый ремонт endpoint, scan-count=$QUICK_SCAN_COUNT
@@ -419,6 +515,7 @@ Routing в 3x-ui вести на outboundTag: WARP
 Текущий WARP endpoint: $ep
 Для zapret4rocket минимум UDP-порт endpoint: $port
 Рекомендуемая строка zapret: NFQWS_PORTS_UDP=$ZAPRET_PORTS
+JSON-статус: warpwp --status-json
 Быстрый scan: warpwp --quick-scan
 Обычный scan: warpwp --check
 Глубокий scan: warpwp --deep-scan
@@ -441,6 +538,7 @@ print_memo_full() {
 ============================================================
 
   warpwp --status
+  warpwp --status-json
   warpwp --doctor
   warpwp --quick-scan
   warpwp --check
@@ -477,6 +575,7 @@ menu() {
 13) Показать строки для zapret4rocket
 14) Quick scan endpoint
 15) Deep scan endpoint
+16) Показать JSON-статус
  0) Выход
 ============================================================
 EOF_MENU
@@ -498,6 +597,7 @@ EOF_MENU
       13) print_zapret; pause ;;
       14) quick_scan; pause ;;
       15) deep_scan; pause ;;
+      16) status_json; pause ;;
       0) exit 0 ;;
       *) echo "Неверный пункт"; sleep 1 ;;
     esac
@@ -510,6 +610,7 @@ case "${1:-}" in
   --install-cron|--cron) install_cron_check ;;
   --update|--self-update) update_local_scripts ;;
   --status) status ;;
+  --status-json|--json) status_json ;;
   --doctor) doctor ;;
   --check|--repair) repair_endpoint ;;
   --quick-scan|--quick) quick_scan ;;
