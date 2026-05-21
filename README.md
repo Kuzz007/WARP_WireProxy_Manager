@@ -17,7 +17,7 @@ https://github.com/Kuzz007/WARP_WireProxy_Manager
 Текущая основная версия:
 
 ```text
-warpwp v1.1.0
+warpwp v1.1.3
 warp-wireproxy-native.sh v1.1.0
 ```
 
@@ -29,6 +29,17 @@ warp-wireproxy-native.sh v1.1.0
 
 ```bash
 bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warpwp.sh?nocache=$(date +%s)") --install-manager
+```
+
+Если raw-кэш GitHub отдаёт старую версию, можно поставить через GitHub API:
+
+```bash
+curl -fsSL \
+  -H "Accept: application/vnd.github.raw" \
+  "https://api.github.com/repos/Kuzz007/WARP_WireProxy_Manager/contents/warpwp.sh?ref=main" \
+  -o /usr/local/bin/warpwp
+
+chmod +x /usr/local/bin/warpwp
 ```
 
 ### 2. Открыть меню
@@ -52,11 +63,11 @@ warpwp --doctor
 Хороший итог:
 
 ```text
-OK=18 WARN=0 FAIL=0
+OK=19 WARN=0 FAIL=0
 warp=on
 wireproxy active
 cron установлен
-flock найден
+cron использует flock lock
 ```
 
 ---
@@ -104,7 +115,8 @@ warpwp
 
 - Ставит cron-автопроверку endpoint'а.
 - Если WARP умер — автоматически пересканирует endpoint'ы, подменит рабочий и перезапустит `wireproxy`.
-- Показывает готовые блоки для 3x-ui/Xray и zapret4rocket.
+- Показывает готовые блоки для 3x-ui/Xray.
+- Показывает готовые строки для zapret4rocket.
 
 ---
 
@@ -112,7 +124,7 @@ warpwp
 
 ```text
 ============================================================
- WARP + wireproxy manager v1.1.0
+ WARP + wireproxy manager v1.1.3
 ============================================================
  1) Установить / обновить WARP + wireproxy + cron
  2) Проверить состояние
@@ -121,9 +133,12 @@ warpwp
  5) Безопасно удалить WARP Manager
  6) Показать логи
  7) Показать команды
- 8) Показать памятку для 3x-ui / zapret
+ 8) Показать полную памятку
  9) Doctor / расширенная диагностика
 10) PURGE / жёсткая очистка WARP-следов
+11) Переустановить только cron/check с flock lock
+12) Показать блоки для 3x-ui / Xray
+13) Показать строки для zapret4rocket
  0) Выход
 ============================================================
 ```
@@ -136,11 +151,15 @@ warpwp
 |---|---|
 | `warpwp` | Открыть меню |
 | `warpwp --install` | Установить/обновить WARP + wireproxy + cron |
+| `warpwp --install-cron` | Переустановить только cron с `flock` lock |
+| `warpwp --cron` | Алиас для `--install-cron` |
 | `warpwp --status` | Показать состояние |
 | `warpwp --doctor` | Расширенная диагностика |
 | `warpwp --check` | Проверить WARP и при необходимости заменить endpoint |
+| `warpwp --xray` | Показать только блоки для 3x-ui/Xray |
+| `warpwp --zapret` | Показать только строки для zapret4rocket |
 | `warpwp --logs` | Показать логи cron и `wireproxy` |
-| `warpwp --memo` | Показать памятку для 3x-ui/zapret |
+| `warpwp --memo` | Показать полную памятку для 3x-ui/zapret |
 | `warpwp --update` | Обновить локальные скрипты |
 | `warpwp --self-update` | То же самое, что `--update` |
 | `warpwp --version` | Показать версию менеджера |
@@ -178,7 +197,7 @@ warpwp
 
 ## Cron-автопроверка и flock lock
 
-После `warpwp --install` создаётся cron-файл:
+После `warpwp --install` или `warpwp --install-cron` создаётся cron-файл:
 
 ```text
 /etc/cron.d/warp-wireproxy-check
@@ -280,6 +299,7 @@ wireproxy active
 SOCKS5 127.0.0.1:40000
 Cloudflare trace warp=on
 cron
+cron использует flock lock
 лог
 ```
 
@@ -290,7 +310,8 @@ cron
 [OK] SOCKS5 порт 40000 слушает
 [OK] Cloudflare trace: warp=on
 [OK] cron установлен: /etc/cron.d/warp-wireproxy-check
-Итог: OK=18 WARN=0 FAIL=0
+[OK] cron использует flock lock
+Итог: OK=19 WARN=0 FAIL=0
 ```
 
 ---
@@ -312,7 +333,13 @@ warp=on
 
 ---
 
-## 3x-ui / Xray outbounds
+## 3x-ui / Xray
+
+Быстро вывести только блоки для Xray:
+
+```bash
+warpwp --xray
+```
 
 Добавь эти outbounds в конфиг Xray/3x-ui:
 
@@ -369,6 +396,12 @@ warp=on
 ---
 
 ## zapret4rocket
+
+Быстро вывести только строки для zapret4rocket:
+
+```bash
+warpwp --zapret
+```
 
 Для WARP важен внешний UDP-порт endpoint'а, а не локальный порт `40000`.
 
@@ -454,6 +487,17 @@ warpwp --self-update
 bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warpwp.sh?nocache=$(date +%s)") --install-manager
 ```
 
+Обновить через GitHub API, если raw-кэш отдаёт старую версию:
+
+```bash
+curl -fsSL \
+  -H "Accept: application/vnd.github.raw" \
+  "https://api.github.com/repos/Kuzz007/WARP_WireProxy_Manager/contents/warpwp.sh?ref=main" \
+  -o /usr/local/bin/warpwp
+
+chmod +x /usr/local/bin/warpwp
+```
+
 Проверить версии:
 
 ```bash
@@ -506,6 +550,25 @@ wgcf
 ```bash
 warpwp --install
 ```
+
+---
+
+## CI / проверка скриптов
+
+В репозитории есть GitHub Actions workflow:
+
+```text
+.github/workflows/shellcheck.yml
+```
+
+Он проверяет все `*.sh`:
+
+```text
+bash -n
+shellcheck --severity=warning
+```
+
+Это должно ловить синтаксические ошибки до запуска скриптов на сервере.
 
 ---
 
@@ -595,4 +658,6 @@ warpwp.sh                  единый менеджер с меню
 warp-wireproxy-native.sh   нативный установщик WARP + wireproxy
 install-warp-check.sh      отдельный установщик cron-проверки
 warp-wireproxy-auto.sh     старый вариант через внешний установщик
+TODO.md                    список дальнейших улучшений
+.github/workflows/         CI-проверки bash-скриптов
 ```
