@@ -17,7 +17,7 @@ https://github.com/Kuzz007/WARP_WireProxy_Manager
 Текущая версия:
 
 ```text
-warpwp v1.1.7
+warpwp v1.1.8
 warp-wireproxy-native.sh v1.1.0
 ```
 
@@ -48,94 +48,11 @@ chmod +x /usr/local/bin/warpwp
 warpwp --install
 ```
 
-Включить timer-режим вместо cron:
-
-```bash
-warpwp --install-timer
-```
-
-При установке timer менеджер спросит интервал проверки в минутах. По умолчанию — `10` минут.
-
-Проверить scheduler:
-
-```bash
-warpwp --scheduler-status
-```
-
 Проверить состояние:
 
 ```bash
 warpwp --doctor
 warpwp --status-json
-```
-
----
-
-## Scheduler modes
-
-Начиная с `warpwp v1.1.7`, cron и systemd timer сделаны взаимоисключающимися, чтобы не было двух параллельных планировщиков.
-
-Включить cron-режим:
-
-```bash
-warpwp --install-cron
-```
-
-Что делает команда:
-
-```text
-ставит /etc/cron.d/warp-wireproxy-check
-отключает и удаляет systemd timer
-оставляет общий flock lock
-```
-
-Включить timer-режим:
-
-```bash
-warpwp --install-timer
-```
-
-Что делает команда:
-
-```text
-спрашивает интервал проверки в минутах
-создаёт warp-wireproxy-check.service
-создаёт warp-wireproxy-check.timer
-удаляет /etc/cron.d/warp-wireproxy-check
-оставляет общий flock lock
-```
-
-Передать интервал сразу без вопроса:
-
-```bash
-warpwp --install-timer 15
-```
-
-Проверить, что активно:
-
-```bash
-warpwp --scheduler-status
-```
-
-Возможные значения:
-
-```text
-scheduler: cron
-scheduler: systemd_timer
-scheduler: both
-scheduler: none
-```
-
-Если случайно получилось `both`, исправить можно любой из команд:
-
-```bash
-warpwp --install-cron
-```
-
-или:
-
-```bash
-warpwp --install-timer
 ```
 
 ---
@@ -147,22 +64,19 @@ warpwp --install-timer
 | `warpwp` | Открыть меню |
 | `warpwp --install` | Установить/обновить WARP + wireproxy + cron |
 | `warpwp --install-cron` | Включить cron и отключить timer |
-| `warpwp --cron` | Алиас для `--install-cron` |
 | `warpwp --install-timer [минуты]` | Включить timer и отключить cron |
-| `warpwp --timer [минуты]` | Алиас для `--install-timer` |
 | `warpwp --timer-status` | Показать статус systemd timer |
 | `warpwp --scheduler-status` | Показать активный scheduler |
-| `warpwp --scheduler` | Алиас для `--scheduler-status` |
-| `warpwp --remove-timer` | Удалить systemd timer |
 | `warpwp --status` | Показать состояние |
 | `warpwp --status-json` | Показать JSON-статус |
-| `warpwp --json` | Алиас для `--status-json` |
 | `warpwp --doctor` | Расширенная диагностика |
 | `warpwp --check` | Обычный ремонт endpoint, `scan-count=25` |
 | `warpwp --quick-scan` | Быстрый ремонт endpoint, `scan-count=15` |
 | `warpwp --deep-scan` | Глубокий ремонт endpoint, `scan-count=150` |
 | `warpwp --xray` | Показать блоки для 3x-ui/Xray |
 | `warpwp --zapret` | Показать строки для zapret4rocket |
+| `warpwp --wg-json FILE` | Конвертировать WireGuard `.conf` в JSON для 3x-ui/Xray |
+| `warpwp --wg-convert FILE` | Алиас для `--wg-json` |
 | `warpwp --logs` | Показать логи |
 | `warpwp --memo` | Показать полную памятку |
 | `warpwp --update` | Обновить локальные скрипты |
@@ -176,7 +90,7 @@ warpwp --install-timer
 
 ```text
 ============================================================
- WARP + wireproxy manager v1.1.7
+ WARP + wireproxy manager v1.1.8
 ============================================================
  1) Установить / обновить WARP + wireproxy + cron
  2) Проверить состояние
@@ -198,8 +112,117 @@ warpwp --install-timer
 18) Статус systemd timer
 19) Удалить systemd timer
 20) Scheduler status
+21) Конвертировать WireGuard .conf в JSON для 3x-ui
  0) Выход
 ============================================================
+```
+
+---
+
+## WireGuard `.conf` → JSON для 3x-ui/Xray
+
+Команда конвертирует обычный WireGuard config в JSON-формат, который можно вставить в окно создания outbound на вкладке `JSON`.
+
+```bash
+warpwp --wg-json /root/wg0.conf
+```
+
+или:
+
+```bash
+warpwp --wg-convert /root/wg0.conf
+```
+
+Обычный WireGuard config:
+
+```ini
+[Interface]
+PrivateKey = CLIENT_PRIVATE_KEY
+Address = 10.0.0.2/32
+DNS = 1.1.1.1
+
+[Peer]
+PublicKey = SERVER_PUBLIC_KEY
+Endpoint = 1.2.3.4:51820
+AllowedIPs = 0.0.0.0/0, ::/0
+PersistentKeepalive = 25
+```
+
+Будет преобразован в формат:
+
+```json
+{
+  "protocol": "wireguard",
+  "settings": {
+    "mtu": 1420,
+    "secretKey": "CLIENT_PRIVATE_KEY",
+    "address": [
+      "10.0.0.2/32"
+    ],
+    "workers": 2,
+    "peers": [
+      {
+        "publicKey": "SERVER_PUBLIC_KEY",
+        "allowedIPs": [
+          "0.0.0.0/0",
+          "::/0"
+        ],
+        "endpoint": "1.2.3.4:51820",
+        "keepAlive": 25
+      }
+    ],
+    "noKernelTun": false
+  }
+}
+```
+
+После создания outbound задай tag, например:
+
+```text
+WG
+```
+
+И используй routing на:
+
+```json
+{
+  "type": "field",
+  "domain": [
+    "domain:openai.com",
+    "domain:chatgpt.com"
+  ],
+  "outboundTag": "WG"
+}
+```
+
+---
+
+## Scheduler modes
+
+Cron и systemd timer взаимоисключающие.
+
+Включить cron-режим:
+
+```bash
+warpwp --install-cron
+```
+
+Включить timer-режим:
+
+```bash
+warpwp --install-timer
+```
+
+Передать интервал сразу без вопроса:
+
+```bash
+warpwp --install-timer 15
+```
+
+Проверить активный scheduler:
+
+```bash
+warpwp --scheduler-status
 ```
 
 ---
@@ -224,93 +247,6 @@ cron
 timer
 logs
 cache
-```
-
-Пример ключевых полей:
-
-```json
-{
-  "healthy": true,
-  "scheduler": "systemd_timer",
-  "timer": {
-    "active": true,
-    "interval_minutes": 10
-  },
-  "cron": {
-    "installed": false
-  }
-}
-```
-
----
-
-## Systemd timer
-
-Файлы timer-режима:
-
-```text
-/etc/systemd/system/warp-wireproxy-check.service
-/etc/systemd/system/warp-wireproxy-check.timer
-/etc/default/warp-wireproxy-check
-/var/log/warp-timer-check.log
-```
-
-Проверить timer:
-
-```bash
-warpwp --timer-status
-systemctl status warp-wireproxy-check.timer --no-pager -l
-systemctl list-timers --all 'warp-wireproxy-check.timer'
-journalctl -u warp-wireproxy-check.service -n 80 --no-pager
-```
-
-Удалить timer:
-
-```bash
-warpwp --remove-timer
-```
-
----
-
-## Cron
-
-Файл cron-режима:
-
-```text
-/etc/cron.d/warp-wireproxy-check
-```
-
-Пример:
-
-```cron
-*/10 * * * * root flock -n /var/lock/warpwp-check.lock /usr/local/bin/warp-wireproxy-native.sh --check --scan-count 25 >> /var/log/warp-check.log 2>&1
-```
-
----
-
-## Что умеет
-
-- Устанавливает WARP + `wireproxy` без интерактивного меню `fscarmen`.
-- Сам регистрирует WARP-устройство через Cloudflare API.
-- Создаёт `warp.conf`, `proxy.conf` и `wireproxy.service`.
-- Поднимает локальный SOCKS5 `127.0.0.1:40000`.
-- Сканирует WARP endpoint'ы Cloudflare и выбирает рабочий endpoint с `warp=on`.
-- Поддерживает `quick/check/deep scan`.
-- Кэширует good/bad endpoint'ы.
-- Использует blacklist для плохих endpoint'ов.
-- Использует общий `flock` lock для cron/timer/manual scan.
-- Показывает блоки для 3x-ui/Xray.
-- Показывает строки для zapret4rocket.
-- Выводит JSON-статус.
-
----
-
-## Режимы scan / ремонта endpoint
-
-```bash
-warpwp --quick-scan
-warpwp --check
-warpwp --deep-scan
 ```
 
 ---
