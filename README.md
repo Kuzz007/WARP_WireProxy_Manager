@@ -1,17 +1,62 @@
 # WARP WireProxy Manager
 
-Автоматический установщик и менеджер для схемы:
+`WARP WireProxy Manager` — это неинтерактивный установщик и менеджер для схемы:
 
 ```text
 3x-ui / Xray → socks5://127.0.0.1:40000 → wireproxy → Cloudflare WARP → internet
 ```
 
-Проект рассчитан на VPS с Linux/systemd. Основная цель — быстро поднять WARP как локальный SOCKS5 outbound для 3x-ui/Xray, автоматически подобрать рабочий endpoint Cloudflare WARP и поддерживать его живым через cron-проверку.
+Проект рассчитан на VPS с Linux/systemd. Основная цель — быстро поднять Cloudflare WARP как локальный SOCKS5 outbound для 3x-ui/Xray, автоматически подобрать рабочий WARP endpoint и поддерживать его живым через cron-проверку.
 
 Репозиторий:
 
 ```text
 https://github.com/Kuzz007/WARP_WireProxy_Manager
+```
+
+Текущая основная версия:
+
+```text
+warpwp v1.1.0
+warp-wireproxy-native.sh v1.1.0
+```
+
+---
+
+## Быстрый старт
+
+### 1. Установить менеджер
+
+```bash
+bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warpwp.sh?nocache=$(date +%s)") --install-manager
+```
+
+### 2. Открыть меню
+
+```bash
+warpwp
+```
+
+### 3. Выбрать пункт
+
+```text
+1) Установить / обновить WARP + wireproxy + cron
+```
+
+### 4. Проверить состояние
+
+```bash
+warpwp --doctor
+```
+
+Хороший итог:
+
+```text
+OK=18 WARN=0 FAIL=0
+warp=on
+wireproxy active
+cron установлен
+flock найден
 ```
 
 ---
@@ -37,6 +82,20 @@ https://github.com/Kuzz007/WARP_WireProxy_Manager
 warp=on
 ```
 
+- Кэширует хорошие endpoint'ы:
+
+```text
+/etc/wireguard/warp-endpoints.good
+```
+
+- Кэширует плохие endpoint'ы:
+
+```text
+/etc/wireguard/warp-endpoints.bad
+```
+
+- Использует blacklist: endpoint с 3+ ошибками не проверяется 24 часа.
+- Использует `flock`, чтобы cron/check не запускались параллельно.
 - Создаёт короткую команду:
 
 ```bash
@@ -49,91 +108,44 @@ warpwp
 
 ---
 
-## Быстрая установка
-
-Установить менеджер:
-
-```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warpwp.sh?nocache=$(date +%s)") --install-manager
-```
-
-Открыть меню:
-
-```bash
-warpwp
-```
-
-Дальше выбери пункт:
-
-```text
-1) Установить / обновить WARP + wireproxy + cron
-```
-
----
-
 ## Меню
 
 ```text
 ============================================================
- WARP + wireproxy manager
+ WARP + wireproxy manager v1.1.0
 ============================================================
  1) Установить / обновить WARP + wireproxy + cron
  2) Проверить состояние
  3) Проверить и починить endpoint
  4) Обновить локальные скрипты
- 5) Удалить WARP / wireproxy / cron
+ 5) Безопасно удалить WARP Manager
  6) Показать логи
  7) Показать команды
  8) Показать памятку для 3x-ui / zapret
+ 9) Doctor / расширенная диагностика
+10) PURGE / жёсткая очистка WARP-следов
  0) Выход
 ============================================================
 ```
 
 ---
 
-## Команды без меню
+## Основные команды
 
-Установить или обновить всё:
-
-```bash
-warpwp --install
-```
-
-Проверить состояние:
-
-```bash
-warpwp --status
-```
-
-Проверить WARP и при необходимости заменить endpoint:
-
-```bash
-warpwp --check
-```
-
-Показать памятку для 3x-ui/zapret:
-
-```bash
-warpwp --memo
-```
-
-Показать логи:
-
-```bash
-warpwp --logs
-```
-
-Удалить WARP/wireproxy/cron:
-
-```bash
-warpwp --remove
-```
-
-Обновить локальные скрипты:
-
-```bash
-warpwp --update
-```
+| Команда | Что делает |
+|---|---|
+| `warpwp` | Открыть меню |
+| `warpwp --install` | Установить/обновить WARP + wireproxy + cron |
+| `warpwp --status` | Показать состояние |
+| `warpwp --doctor` | Расширенная диагностика |
+| `warpwp --check` | Проверить WARP и при необходимости заменить endpoint |
+| `warpwp --logs` | Показать логи cron и `wireproxy` |
+| `warpwp --memo` | Показать памятку для 3x-ui/zapret |
+| `warpwp --update` | Обновить локальные скрипты |
+| `warpwp --self-update` | То же самое, что `--update` |
+| `warpwp --version` | Показать версию менеджера |
+| `warpwp --remove` | Безопасно удалить компоненты менеджера |
+| `warpwp --purge` | Жёстко удалить WARP/wireproxy/wgcf/warp-cli/fscarmen-следы |
 
 ---
 
@@ -146,9 +158,14 @@ warpwp --update
 /usr/local/bin/warp-wireproxy-native.sh
 /etc/wireguard/warp.conf
 /etc/wireguard/proxy.conf
+/etc/wireguard/warp-account.json
+/etc/wireguard/warp-private.key
+/etc/wireguard/warp-endpoints.good
+/etc/wireguard/warp-endpoints.bad
 /etc/systemd/system/wireproxy.service
 /etc/cron.d/warp-wireproxy-check
 /var/log/warp-check.log
+/var/lock/warpwp-check.lock
 ```
 
 Бэкапы создаются здесь:
@@ -159,7 +176,7 @@ warpwp --update
 
 ---
 
-## Cron-автопроверка
+## Cron-автопроверка и flock lock
 
 После `warpwp --install` создаётся cron-файл:
 
@@ -170,7 +187,15 @@ warpwp --update
 Пример содержимого:
 
 ```cron
-*/10 * * * * root /usr/local/bin/warp-wireproxy-native.sh --check --scan-count 25 >> /var/log/warp-check.log 2>&1
+*/10 * * * * root flock -n /var/lock/warpwp-check.lock /usr/local/bin/warp-wireproxy-native.sh --check --scan-count 25 >> /var/log/warp-check.log 2>&1
+```
+
+Зачем нужен `flock`:
+
+```text
+если предыдущий endpoint scan ещё идёт, новый cron-запуск не начнётся
+нет параллельной перезаписи proxy.conf
+нет двойного restart wireproxy
 ```
 
 Лог:
@@ -184,10 +209,89 @@ tail -n 80 /var/log/warp-check.log
 1. Проверяет локальный SOCKS5 `127.0.0.1:40000`.
 2. Делает запрос к Cloudflare trace.
 3. Если есть `warp=on` — ничего не меняет.
-4. Если WARP не отвечает — сканирует endpoint'ы.
-5. Выбирает рабочий и быстрый endpoint.
-6. Подменяет `Endpoint` в `warp.conf` и `proxy.conf`.
-7. Перезапускает `wireproxy`.
+4. Если WARP не отвечает — проверяет текущий endpoint.
+5. Проверяет хорошие endpoint'ы из кэша.
+6. Проверяет fallback endpoint'ы.
+7. При необходимости запускает random scan.
+8. Выбирает рабочий и быстрый endpoint.
+9. Подменяет `Endpoint` в `warp.conf` и `proxy.conf`.
+10. Перезапускает `wireproxy`.
+
+---
+
+## Кэш endpoint'ов
+
+Хорошие endpoint'ы:
+
+```bash
+cat /etc/wireguard/warp-endpoints.good
+```
+
+Плохие endpoint'ы:
+
+```bash
+cat /etc/wireguard/warp-endpoints.bad 2>/dev/null
+```
+
+Формат `good`:
+
+```text
+endpoint    time_total    colo    loc    timestamp
+```
+
+Пример:
+
+```text
+188.114.97.249:500    0    quick    quick    1779364491
+```
+
+`time_total=0 quick quick` означает, что endpoint был подтверждён быстрой проверкой `--check`, а не полным сканом.
+
+Формат `bad`:
+
+```text
+endpoint    fail_count    timestamp
+```
+
+Если endpoint получил 3+ ошибки, он пропускается 24 часа.
+
+---
+
+## Doctor / диагностика
+
+Запуск:
+
+```bash
+warpwp --doctor
+```
+
+Проверяет:
+
+```text
+root права
+curl/systemctl/ss/grep/awk/sed
+flock
+/usr/local/bin/warpwp
+/usr/local/bin/warp-wireproxy-native.sh
+warp.conf
+proxy.conf
+wireproxy.service
+wireproxy active
+SOCKS5 127.0.0.1:40000
+Cloudflare trace warp=on
+cron
+лог
+```
+
+Пример здорового состояния:
+
+```text
+[OK] wireproxy active
+[OK] SOCKS5 порт 40000 слушает
+[OK] Cloudflare trace: warp=on
+[OK] cron установлен: /etc/cron.d/warp-wireproxy-check
+Итог: OK=18 WARN=0 FAIL=0
+```
 
 ---
 
@@ -330,21 +434,77 @@ bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Mana
 
 ---
 
-## Очистка и переустановка
+## Обновление
 
-Через менеджер:
+Обновить локальные скрипты:
+
+```bash
+warpwp --update
+```
+
+или:
+
+```bash
+warpwp --self-update
+```
+
+Обновить сам менеджер из GitHub напрямую:
+
+```bash
+bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warpwp.sh?nocache=$(date +%s)") --install-manager
+```
+
+Проверить версии:
+
+```bash
+warpwp --version
+/usr/local/bin/warp-wireproxy-native.sh --version
+```
+
+---
+
+## Удаление и переустановка
+
+Безопасное удаление компонентов менеджера:
 
 ```bash
 warpwp --remove
-warpwp --install
 ```
 
-Если нужно вручную посмотреть, что связано с WARP:
+Удаляет только основные компоненты менеджера:
+
+```text
+/usr/local/bin/warp-wireproxy-native.sh
+/etc/cron.d/warp-wireproxy-check
+/etc/systemd/system/wireproxy.service
+/etc/wireguard/warp.conf
+/etc/wireguard/proxy.conf
+/etc/wireguard/warp-account.json
+/etc/wireguard/warp-private.key
+```
+
+Полная жёсткая очистка:
 
 ```bash
-systemctl list-unit-files | grep -Ei 'warp|wireproxy|wgcf|wg-quick' || true
-ps aux | grep -Ei 'warp|wireproxy|wgcf|cloudflare|warp-cli|warp-svc' | grep -v grep || true
-ls -la /etc/wireguard/ 2>/dev/null || true
+warpwp --purge
+```
+
+Дополнительно удаляет возможные следы старых установок:
+
+```text
+wireproxy binary
+warp-cli
+warp-svc
+wgcf
+старые fscarmen файлы
+/etc/wireguard
+старые backup-папки
+```
+
+После очистки можно установить заново:
+
+```bash
+warpwp --install
 ```
 
 ---
