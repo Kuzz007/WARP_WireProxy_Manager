@@ -1,33 +1,19 @@
 #!/usr/bin/env bash
 # warpwp.sh
 # Единый менеджер WARP + wireproxy + 3x-ui helper.
-#
-# Ставит короткую команду: warpwp
-# В меню есть:
-#   1) установить/обновить WARP + wireproxy + cron
-#   2) проверить состояние
-#   3) проверить и починить endpoint
-#   4) обновить локальные скрипты
-#   5) удалить WARP/wireproxy/cron
-#   6) показать логи
-#   7) показать команды
-#   8) показать памятку для 3x-ui/zapret
-#   0) выход
-#
-# Быстрая установка менеджера:
-#   bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/test/main/warpwp.sh?nocache=$(date +%s)") --install-manager
 
 set -Eeuo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/Kuzz007/test/main"
+VERSION="1.1.0"
+REPO_RAW="https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main"
 NATIVE_URL="$REPO_RAW/warp-wireproxy-native.sh"
-CHECK_INSTALLER_URL="$REPO_RAW/install-warp-check.sh"
 MANAGER_URL="$REPO_RAW/warpwp.sh"
 
 MANAGER_BIN="/usr/local/bin/warpwp"
 NATIVE_BIN="/usr/local/bin/warp-wireproxy-native.sh"
 CRON_FILE="/etc/cron.d/warp-wireproxy-check"
 LOG_FILE="/var/log/warp-check.log"
+LOCK_FILE="/var/lock/warpwp-check.lock"
 DEFAULT_SCAN_COUNT="25"
 DEFAULT_SCHEDULE="*/10 * * * *"
 
@@ -64,6 +50,23 @@ need_curl() {
   else
     err "curl не найден и пакетный менеджер неизвестен."
     exit 1
+  fi
+}
+
+ensure_flock() {
+  if command -v flock >/dev/null 2>&1; then
+    return 0
+  fi
+  warn "flock не найден. Пробую установить util-linux для защиты cron от параллельных запусков."
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update -y || true
+    apt-get install -y util-linux || true
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y util-linux || true
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y util-linux || true
+  elif command -v apk >/dev/null 2>&1; then
+    apk add --no-cache util-linux || true
   fi
 }
 
@@ -114,17 +117,30 @@ update_local_scripts() {
 
 install_cron_check() {
   need_root
+  ensure_flock
   log "Устанавливаю cron-автопроверку WARP endpoint..."
+
+  local check_cmd
+  if command -v flock >/dev/null 2>&1; then
+    check_cmd="flock -n $LOCK_FILE $NATIVE_BIN --check --scan-count $DEFAULT_SCAN_COUNT"
+  else
+    warn "flock недоступен. Cron будет работать без lock-защиты."
+    check_cmd="$NATIVE_BIN --check --scan-count $DEFAULT_SCAN_COUNT"
+  fi
+
   cat > "$CRON_FILE" <<EOF
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-$DEFAULT_SCHEDULE root $NATIVE_BIN --check --scan-count $DEFAULT_SCAN_COUNT >> $LOG_FILE 2>&1
+$DEFAULT_SCHEDULE root $check_cmd >> $LOG_FILE 2>&1
 EOF
   chmod 0644 "$CRON_FILE"
   systemctl restart cron 2>/dev/null || systemctl restart crond 2>/dev/null || true
   ok "Cron включён: $CRON_FILE"
   ok "Лог: $LOG_FILE"
+  if command -v flock >/dev/null 2>&1; then
+    ok "Lock включён: $LOCK_FILE"
+  fi
 }
 
 install_or_update_all() {
@@ -143,6 +159,11 @@ status() {
   echo "============================================================"
   echo "СОСТОЯНИЕ WARP / WIREPROXY"
   echo "============================================================"
+  echo
+
+  echo "--- Version ---"
+  echo "warpwp v$VERSION"
+  [[ -x "$NATIVE_BIN" ]] && grep -m1 '^# warp-wireproxy-native.sh' "$NATIVE_BIN" >/dev/null 2>&1 && echo "native script: installed" || echo "native script: not installed"
   echo
 
   echo "--- Endpoint ---"
@@ -177,7 +198,71 @@ repair_endpoint() {
     warn "Локальный native-скрипт не найден. Сначала обновляю скрипты."
     update_local_scripts
   fi
-  "$NATIVE_BIN" --check --scan-count "$DEFAULT_SCAN_COUNT"
+  ensure_flock
+  if command -v flock >/dev/null 2>&1; then
+    flock -n "$LOCK_FILE" "$NATIVE_BIN" --check --scan-count "$DEFAULT_SCAN_COUNT" || warn "Другая проверка уже выполняется или check завершился с ошибкой."
+  else
+    "$NATIVE_BIN" --check --scan-count "$DEFAULT_SCAN_COUNT"
+  fi
+}
+
+doctor() {
+  echo "============================================================"
+  echo "DOCTOR / ДИАГНОСТИКА"
+  echo "============================================================"
+
+  local ok_count=0 warn_count=0 fail_count=0
+  check_ok() { printf '\033[1;32m[OK]\033[0m %s\n' "$1"; ok_count=$((ok_count+1)); }
+  check_warn() { printf '\033[1;33m[WARN]\033[0m %s\n' "$1"; warn_count=$((warn_count+1)); }
+  check_fail() { printf '\033[1;31m[FAIL]\033[0m %s\n' "$1"; fail_count=$((fail_count+1)); }
+
+  [[ "${EUID}" -eq 0 ]] && check_ok "запущено от root" || check_fail "нужно запускать от root"
+
+  for cmd in curl systemctl ss grep awk sed; do
+    command -v "$cmd" >/dev/null 2>&1 && check_ok "команда $cmd найдена" || check_fail "команда $cmd не найдена"
+  done
+
+  command -v flock >/dev/null 2>&1 && check_ok "flock найден, параллельные проверки защищены" || check_warn "flock не найден, cron может запускаться параллельно"
+  [[ -x "$MANAGER_BIN" ]] && check_ok "$MANAGER_BIN установлен" || check_warn "$MANAGER_BIN не найден"
+  [[ -x "$NATIVE_BIN" ]] && check_ok "$NATIVE_BIN установлен" || check_warn "$NATIVE_BIN не найден"
+
+  [[ -f /etc/wireguard/warp.conf ]] && check_ok "warp.conf найден" || check_fail "warp.conf не найден"
+  [[ -f /etc/wireguard/proxy.conf ]] && check_ok "proxy.conf найден" || check_fail "proxy.conf не найден"
+  [[ -f /etc/systemd/system/wireproxy.service || -f /usr/lib/systemd/system/wireproxy.service || -f /lib/systemd/system/wireproxy.service ]] && check_ok "wireproxy.service найден" || check_fail "wireproxy.service не найден"
+
+  if systemctl is-active --quiet wireproxy 2>/dev/null; then
+    check_ok "wireproxy active"
+  else
+    check_fail "wireproxy не active"
+  fi
+
+  if ss -lntup 2>/dev/null | grep -q ":$SOCKS_PORT"; then
+    check_ok "SOCKS5 порт $SOCKS_PORT слушает"
+  else
+    check_fail "SOCKS5 порт $SOCKS_PORT не слушает"
+  fi
+
+  local trace
+  trace="$(curl -m 10 -s -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -E 'ip=|colo=|loc=|warp=' || true)"
+  if echo "$trace" | grep -q '^warp=on'; then
+    check_ok "Cloudflare trace: warp=on"
+    echo "$trace"
+  else
+    check_fail "Cloudflare trace не дал warp=on"
+    [[ -n "$trace" ]] && echo "$trace"
+  fi
+
+  [[ -f "$CRON_FILE" ]] && check_ok "cron установлен: $CRON_FILE" || check_warn "cron не установлен"
+  [[ -f "$LOG_FILE" ]] && check_ok "лог существует: $LOG_FILE" || check_warn "лог пока отсутствует"
+
+  echo
+  echo "Итог: OK=$ok_count WARN=$warn_count FAIL=$fail_count"
+  if [[ "$fail_count" -gt 0 ]]; then
+    echo
+    echo "Рекомендуемые действия:"
+    echo "  warpwp --check     # попробовать починить endpoint"
+    echo "  warpwp --install   # переустановить/обновить WARP + cron"
+  fi
 }
 
 show_logs() {
@@ -192,16 +277,39 @@ show_logs() {
   journalctl -u wireproxy -n 80 --no-pager 2>/dev/null || echo "journal wireproxy недоступен"
 }
 
-remove_all() {
+remove_safe() {
   need_root
-  echo "Это удалит WARP/wireproxy/cron/локальные скрипты."
-  read -rp "Продолжить? [y/N]: " ans
+  echo "Это удалит только компоненты WARP WireProxy Manager."
+  echo "Для полной жёсткой очистки старых wgcf/fscarmen/warp-cli используй: warpwp --purge"
+  read -rp "Продолжить безопасное удаление? [y/N]: " ans
   case "$ans" in
     y|Y|yes|YES|да|Да) ;;
     *) echo "Отменено."; return 0 ;;
   esac
 
-  log "Останавливаю сервисы..."
+  log "Останавливаю wireproxy и cron..."
+  systemctl stop wireproxy 2>/dev/null || true
+  systemctl disable wireproxy 2>/dev/null || true
+
+  rm -f /etc/systemd/system/wireproxy.service
+  rm -f "$CRON_FILE" "$NATIVE_BIN" "$LOG_FILE"
+  rm -f /etc/wireguard/warp.conf /etc/wireguard/proxy.conf /etc/wireguard/warp-account.json /etc/wireguard/warp-private.key
+  rmdir /etc/wireguard 2>/dev/null || true
+
+  systemctl daemon-reload
+  systemctl reset-failed
+  ok "Безопасное удаление завершено. Команда warpwp оставлена для повторной установки."
+}
+
+purge_all() {
+  need_root
+  echo "Это жёстко удалит WARP/wireproxy/cron/wgcf/warp-cli/fscarmen-следы."
+  read -rp "Продолжить PURGE? [y/N]: " ans
+  case "$ans" in
+    y|Y|yes|YES|да|Да) ;;
+    *) echo "Отменено."; return 0 ;;
+  esac
+
   systemctl stop wireproxy 2>/dev/null || true
   systemctl disable wireproxy 2>/dev/null || true
   systemctl stop warp-svc 2>/dev/null || true
@@ -216,27 +324,19 @@ remove_all() {
   pkill -f warp-cli 2>/dev/null || true
   pkill -f wgcf 2>/dev/null || true
 
-  log "Удаляю файлы..."
-  rm -f /etc/systemd/system/wireproxy.service
-  rm -f /etc/systemd/system/warp-svc.service
-  rm -f /usr/lib/systemd/system/wireproxy.service
-  rm -f /usr/lib/systemd/system/warp-svc.service
-  rm -f /lib/systemd/system/wireproxy.service
-  rm -f /lib/systemd/system/warp-svc.service
-
+  rm -f /etc/systemd/system/wireproxy.service /etc/systemd/system/warp-svc.service
+  rm -f /usr/lib/systemd/system/wireproxy.service /usr/lib/systemd/system/warp-svc.service
+  rm -f /lib/systemd/system/wireproxy.service /lib/systemd/system/warp-svc.service
   rm -f /usr/bin/wireproxy /usr/local/bin/wireproxy /opt/bin/wireproxy
   rm -f /usr/bin/warp-cli /usr/local/bin/warp-cli /usr/bin/warp-svc /usr/local/bin/warp-svc
   rm -f /usr/bin/wgcf /usr/local/bin/wgcf
-
-  rm -rf /etc/wireguard
-  rm -rf /root/warp-wireproxy-backup /root/warp-wireproxy-native-backup
+  rm -rf /etc/wireguard /root/warp-wireproxy-backup /root/warp-wireproxy-native-backup
   rm -f /root/menu.sh /root/warp-wireproxy-auto.sh /root/warp-wireproxy-native.sh
   rm -f "$CRON_FILE" "$NATIVE_BIN" "$LOG_FILE"
 
   systemctl daemon-reload
   systemctl reset-failed
-
-  ok "Удаление завершено. Команда warpwp оставлена, чтобы можно было установить заново."
+  ok "PURGE завершён. Команда warpwp оставлена для повторной установки."
 }
 
 print_commands() {
@@ -246,7 +346,7 @@ print_commands() {
 ============================================================
 
 Установить менеджер:
-  bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/test/main/warpwp.sh?nocache=\$(date +%s)") --install-manager
+  bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warpwp.sh?nocache=\$(date +%s)") --install-manager
 
 Открыть меню:
   warpwp
@@ -254,17 +354,26 @@ print_commands() {
 Установить / обновить всё:
   warpwp --install
 
-Проверить и починить endpoint вручную:
-  warpwp --check
-
 Проверить состояние:
   warpwp --status
+
+Расширенная диагностика:
+  warpwp --doctor
+
+Проверить и починить endpoint вручную:
+  warpwp --check
 
 Показать памятку для 3x-ui/zapret:
   warpwp --memo
 
-Удалить WARP/wireproxy:
+Показать версию:
+  warpwp --version
+
+Безопасно удалить компоненты менеджера:
   warpwp --remove
+
+Полная жёсткая очистка:
+  warpwp --purge
 
 EOF
 }
@@ -283,6 +392,7 @@ Routing в 3x-ui вести на outboundTag: WARP
 Для zapret4rocket минимум UDP-порт endpoint: $port
 Рекомендуемая строка zapret: NFQWS_PORTS_UDP=$ZAPRET_PORTS
 Ремонт endpoint: warpwp --check
+Диагностика: warpwp --doctor
 Логи автопроверки: tail -n 80 $LOG_FILE
 ------------------------------------------------------------
 EOF
@@ -340,22 +450,7 @@ print_memo_full() {
 Важно: routing правила направлять на outboundTag "WARP", не на "WARP-socks5".
 
 ------------------------------------------------------------
-3) Пример routing для OpenAI/ChatGPT
-------------------------------------------------------------
-
-{
-  "type": "field",
-  "domain": [
-    "domain:openai.com",
-    "domain:chatgpt.com",
-    "domain:oaistatic.com",
-    "domain:oaiusercontent.com"
-  ],
-  "outboundTag": "WARP"
-}
-
-------------------------------------------------------------
-4) zapret4rocket
+3) zapret4rocket
 ------------------------------------------------------------
 
 Текущий endpoint:
@@ -370,41 +465,17 @@ print_memo_full() {
 
   NFQWS_PORTS_UDP=$ZAPRET_PORTS
 
-Открыть конфиг:
-
-  nano /opt/zapret/config
-
-Перезапуск:
-
-  /opt/zapret/init.d/sysv/zapret restart
-
-или:
-
-  systemctl restart zapret
-
 ------------------------------------------------------------
-5) Полезные команды
+4) Полезные команды
 ------------------------------------------------------------
 
-Проверить состояние:
-
-  warpwp --status
-
-Проверить и починить endpoint:
-
-  warpwp --check
-
-Показать логи:
-
-  warpwp --logs
-
-Обновить локальные скрипты:
-
-  warpwp --update
-
-Удалить WARP/wireproxy/cron:
-
-  warpwp --remove
+  warpwp --status    # состояние
+  warpwp --doctor    # расширенная диагностика
+  warpwp --check     # проверить и починить endpoint
+  warpwp --logs      # логи
+  warpwp --update    # обновить скрипты
+  warpwp --remove    # безопасно удалить
+  warpwp --purge     # жёсткая очистка
 
 EOF
 }
@@ -414,16 +485,18 @@ menu() {
     clear || true
     cat <<EOF
 ============================================================
- WARP + wireproxy manager
+ WARP + wireproxy manager v$VERSION
 ============================================================
  1) Установить / обновить WARP + wireproxy + cron
  2) Проверить состояние
  3) Проверить и починить endpoint
  4) Обновить локальные скрипты
- 5) Удалить WARP / wireproxy / cron
+ 5) Безопасно удалить WARP Manager
  6) Показать логи
  7) Показать команды
  8) Показать памятку для 3x-ui / zapret
+ 9) Doctor / расширенная диагностика
+10) PURGE / жёсткая очистка WARP-следов
  0) Выход
 ============================================================
 EOF
@@ -434,10 +507,12 @@ EOF
       2) status; pause ;;
       3) repair_endpoint; pause ;;
       4) update_local_scripts; pause ;;
-      5) remove_all; pause ;;
+      5) remove_safe; pause ;;
       6) show_logs; pause ;;
       7) print_commands; pause ;;
       8) print_memo_full; pause ;;
+      9) doctor; pause ;;
+      10) purge_all; pause ;;
       0) exit 0 ;;
       *) echo "Неверный пункт"; sleep 1 ;;
     esac
@@ -448,11 +523,17 @@ case "${1:-}" in
   --install-manager)
     install_manager
     ;;
-  --install|--update)
+  --install)
     install_or_update_all
+    ;;
+  --update|--self-update)
+    update_local_scripts
     ;;
   --status)
     status
+    ;;
+  --doctor)
+    doctor
     ;;
   --check|--repair)
     repair_endpoint
@@ -461,13 +542,19 @@ case "${1:-}" in
     show_logs
     ;;
   --remove)
-    remove_all
+    remove_safe
+    ;;
+  --purge)
+    purge_all
     ;;
   --memo)
     print_memo_full
     ;;
   --commands)
     print_commands
+    ;;
+  --version|-v)
+    echo "warpwp v$VERSION"
     ;;
   -h|--help)
     print_commands
