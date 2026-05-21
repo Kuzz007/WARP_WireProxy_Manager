@@ -46,6 +46,10 @@
 - [x] `warpwp --install-cron`.
 - [x] атомарный self-update через временный файл + `mv`.
 - [x] GitHub Actions workflow: `bash -n` + `shellcheck` для всех `*.sh`.
+- [x] Локальный скрипт проверки `scripts/check.sh`.
+  - Запускает `bash -n` для всех `*.sh`.
+  - Запускает `shellcheck`, если он установлен.
+  - GitHub Actions теперь использует этот же скрипт.
 
 ## Возможные следующие задачи
 
