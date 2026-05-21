@@ -2,25 +2,23 @@
 
 План ближайших улучшений для `WARP WireProxy Manager`.
 
-## Ближайшее
+## Выполнено
 
-- [ ] `warpwp --xray`
-  - Выводить только блоки для 3x-ui / Xray.
-  - Включить:
+- [x] `warpwp --xray`
+  - Выводит только блоки для 3x-ui / Xray.
+  - Включает:
     - `WARP-socks5` outbound;
     - `WARP` outbound через `proxySettings`;
     - пример routing для OpenAI/ChatGPT;
-    - короткое предупреждение, что routing должен идти на `outboundTag: "WARP"`, а не на `WARP-socks5`.
+    - предупреждение, что routing должен идти на `outboundTag: "WARP"`, а не на `WARP-socks5`.
 
-- [ ] `warpwp --zapret`
-  - Выводить только информацию для zapret4rocket.
-  - Включить:
+- [x] `warpwp --zapret`
+  - Выводит только информацию для zapret4rocket.
+  - Включает:
     - текущий WARP endpoint;
     - UDP-порт текущего endpoint;
     - рекомендуемую строку `NFQWS_PORTS_UDP`;
     - команды открытия конфига и перезапуска zapret.
-
-## Надёжность
 
 - [x] `flock` lock для cron/check.
 - [x] good endpoint cache: `/etc/wireguard/warp-endpoints.good`.
