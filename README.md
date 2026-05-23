@@ -18,7 +18,7 @@ https://github.com/Kuzz007/WARP_WireProxy_Manager
 
 ```text
 warpwp v1.1.8
-warp-wireproxy-native.sh v1.1.0
+warp-wireproxy-native.sh v1.1.1
 ```
 
 ---

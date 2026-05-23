@@ -21,7 +21,7 @@
 
 set -Eeuo pipefail
 
-VERSION="1.1.0"
+VERSION="1.1.1"
 
 SOCKS_HOST="127.0.0.1"
 SOCKS_PORT="40000"
