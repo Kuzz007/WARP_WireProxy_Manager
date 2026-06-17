@@ -2,22 +2,29 @@
 # install-warp-check.sh
 # Устанавливает локальную копию warp-wireproxy-native.sh и добавляет cron-задачу
 # для проверки WARP и автоматической замены endpoint при поломке.
+#
+# NOTE: основной способ установки — warpwp --install. Этот файл оставлен
+# как отдельный минимальный установщик cron-проверки.
 
 set -Eeuo pipefail
 
-SCRIPT_URL="https://raw.githubusercontent.com/Kuzz007/test/main/warp-wireproxy-native.sh"
+REPO_RAW="https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main"
+SCRIPT_URL="$REPO_RAW/warp-wireproxy-native.sh"
+SELF_URL="$REPO_RAW/install-warp-check.sh"
 LOCAL_SCRIPT="/usr/local/bin/warp-wireproxy-native.sh"
 CRON_FILE="/etc/cron.d/warp-wireproxy-check"
 LOG_FILE="/var/log/warp-check.log"
 SCAN_COUNT="25"
 CRON_SCHEDULE="*/10 * * * *"
+LOCK_FILE="/var/lock/warpwp-check.lock"
 
 log()  { printf '\033[1;36m[ИНФО]\033[0m %s\n' "$*"; }
 ok()   { printf '\033[1;32m[ОК]\033[0m %s\n' "$*"; }
+warn() { printf '\033[1;33m[ВНИМАНИЕ]\033[0m %s\n' "$*"; }
 err()  { printf '\033[1;31m[ОШИБКА]\033[0m %s\n' "$*" >&2; }
 
 usage() {
-  cat <<EOF
+  cat <<EOF_USAGE
 Использование:
   bash $0 [опции]
 
@@ -32,34 +39,18 @@ usage() {
   bash $0 --scan-count 40
   bash $0 --schedule "*/5 * * * *"
   bash $0 --remove
-EOF
+EOF_USAGE
 }
 
 REMOVE="0"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --scan-count)
-      SCAN_COUNT="${2:-}"
-      shift 2
-      ;;
-    --schedule)
-      CRON_SCHEDULE="${2:-}"
-      shift 2
-      ;;
-    --remove)
-      REMOVE="1"
-      shift
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      err "Неизвестная опция: $1"
-      usage
-      exit 1
-      ;;
+    --scan-count) SCAN_COUNT="${2:-}"; shift 2 ;;
+    --schedule) CRON_SCHEDULE="${2:-}"; shift 2 ;;
+    --remove) REMOVE="1"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) err "Неизвестная опция: $1"; usage; exit 1 ;;
   esac
 done
 
@@ -70,6 +61,7 @@ fi
 
 if [[ "$REMOVE" == "1" ]]; then
   rm -f "$CRON_FILE"
+  systemctl restart cron 2>/dev/null || systemctl restart crond 2>/dev/null || true
   ok "Cron-задача удалена: $CRON_FILE"
   exit 0
 fi
@@ -90,21 +82,27 @@ if ! command -v curl >/dev/null 2>&1; then
   fi
 fi
 
+if command -v flock >/dev/null 2>&1; then
+  CHECK_CMD="flock -n $LOCK_FILE $LOCAL_SCRIPT --check --scan-count $SCAN_COUNT"
+else
+  warn "flock не найден. Cron будет без lock-защиты."
+  CHECK_CMD="$LOCAL_SCRIPT --check --scan-count $SCAN_COUNT"
+fi
+
 log "Скачиваю локальную копию warp-wireproxy-native.sh..."
 curl -fsSL "${SCRIPT_URL}?nocache=$(date +%s)" -o "$LOCAL_SCRIPT"
 chmod +x "$LOCAL_SCRIPT"
 ok "Скрипт установлен: $LOCAL_SCRIPT"
 
 log "Создаю cron-задачу: $CRON_FILE"
-cat > "$CRON_FILE" <<EOF
+cat > "$CRON_FILE" <<EOF_CRON
 SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-$CRON_SCHEDULE root $LOCAL_SCRIPT --check --scan-count $SCAN_COUNT >> $LOG_FILE 2>&1
-EOF
+$CRON_SCHEDULE root $CHECK_CMD >> $LOG_FILE 2>&1
+EOF_CRON
 chmod 0644 "$CRON_FILE"
 
-# Ubuntu/Debian обычно подхватывает /etc/cron.d автоматически, но перезапуск не повредит.
 systemctl restart cron 2>/dev/null || systemctl restart crond 2>/dev/null || true
 
 ok "Автопроверка WARP установлена."
@@ -128,4 +126,4 @@ echo "Посмотреть последние логи:"
 echo "  tail -n 80 $LOG_FILE"
 echo
 echo "Удалить cron-задачу:"
-echo "  bash <(curl -fsSL https://raw.githubusercontent.com/Kuzz007/test/main/install-warp-check.sh) --remove"
+echo "  bash <(curl -fsSL $SELF_URL) --remove"
