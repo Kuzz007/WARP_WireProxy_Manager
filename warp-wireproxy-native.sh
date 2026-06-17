@@ -62,16 +62,52 @@ EOF
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --check) CHECK_ONLY="1"; shift ;;
-      --port) SOCKS_PORT="${2:-}"; shift 2 ;;
-      --host) SOCKS_HOST="${2:-}"; shift 2 ;;
-      --scan-count) SCAN_COUNT="${2:-}"; shift 2 ;;
-      --ports) local raw_ports="${2:-}"; raw_ports="${raw_ports//,/ }"; WARP_PORTS=($raw_ports); shift 2 ;;
-      --endpoints) local raw_eps="${2:-}"; raw_eps="${raw_eps//,/ }"; CUSTOM_ENDPOINTS=($raw_eps); USE_CUSTOM_ENDPOINTS="1"; shift 2 ;;
-      --force-register) FORCE_REGISTER="1"; shift ;;
-      --version|-v) echo "warp-wireproxy-native.sh v$VERSION"; exit 0 ;;
-      -h|--help) usage; exit 0 ;;
-      *) err "Неизвестная опция: $1"; usage; exit 1 ;;
+      --check)
+        CHECK_ONLY="1"
+        shift
+        ;;
+      --port)
+        SOCKS_PORT="${2:-}"
+        shift 2
+        ;;
+      --host)
+        SOCKS_HOST="${2:-}"
+        shift 2
+        ;;
+      --scan-count)
+        SCAN_COUNT="${2:-}"
+        shift 2
+        ;;
+      --ports)
+        local raw_ports="${2:-}"
+        raw_ports="${raw_ports//,/ }"
+        read -r -a WARP_PORTS <<< "$raw_ports"
+        shift 2
+        ;;
+      --endpoints)
+        local raw_eps="${2:-}"
+        raw_eps="${raw_eps//,/ }"
+        read -r -a CUSTOM_ENDPOINTS <<< "$raw_eps"
+        USE_CUSTOM_ENDPOINTS="1"
+        shift 2
+        ;;
+      --force-register)
+        FORCE_REGISTER="1"
+        shift
+        ;;
+      --version|-v)
+        echo "warp-wireproxy-native.sh v$VERSION"
+        exit 0
+        ;;
+      -h|--help)
+        usage
+        exit 0
+        ;;
+      *)
+        err "Неизвестная опция: $1"
+        usage
+        exit 1
+        ;;
     esac
   done
 }
