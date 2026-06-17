@@ -6,7 +6,9 @@
 3x-ui / Xray → socks5://127.0.0.1:40000 → wireproxy → Cloudflare WARP → internet
 ```
 
-Проект рассчитан на VPS с Linux/systemd. Цель — быстро поднять Cloudflare WARP как локальный SOCKS5 outbound для 3x-ui/Xray, автоматически подобрать рабочий WARP endpoint и поддерживать его живым через один scheduler: cron или systemd timer.
+Проект рассчитан на VPS с Linux + systemd. Цель — быстро поднять Cloudflare WARP как локальный SOCKS5 outbound для 3x-ui/Xray, автоматически подобрать рабочий WARP endpoint и поддерживать его живым через один scheduler: cron или systemd timer.
+
+> Alpine/OpenRC как отдельный init-режим не поддерживается: для автозапуска нужен `systemctl`.
 
 Репозиторий:
 
@@ -17,8 +19,8 @@ https://github.com/Kuzz007/WARP_WireProxy_Manager
 Текущая версия:
 
 ```text
-warpwp v1.1.8
-warp-wireproxy-native.sh v1.1.1
+warpwp v1.2.0
+warp-wireproxy-native.sh v1.1.2
 ```
 
 ---
@@ -75,6 +77,7 @@ warpwp --status-json
 | `warpwp --deep-scan` | Глубокий ремонт endpoint, `scan-count=150` |
 | `warpwp --xray` | Показать блоки для 3x-ui/Xray |
 | `warpwp --zapret` | Показать строки для zapret4rocket |
+| `warpwp --wg-paste` | Вставить WireGuard `.conf` в терминал и получить JSON |
 | `warpwp --wg-json FILE` | Конвертировать WireGuard `.conf` в JSON для 3x-ui/Xray |
 | `warpwp --wg-convert FILE` | Алиас для `--wg-json` |
 | `warpwp --logs` | Показать логи |
@@ -90,7 +93,7 @@ warpwp --status-json
 
 ```text
 ============================================================
- WARP + wireproxy manager v1.1.8
+ WARP + wireproxy manager v1.2.0
 ============================================================
  1) Установить / обновить WARP + wireproxy + cron
  2) Проверить состояние
@@ -112,25 +115,38 @@ warpwp --status-json
 18) Статус systemd timer
 19) Удалить systemd timer
 20) Scheduler status
-21) Конвертировать WireGuard .conf в JSON для 3x-ui
+21) Вставить WireGuard .conf и получить JSON для 3x-ui
+22) Конвертировать WireGuard .conf файл в JSON для 3x-ui
  0) Выход
 ============================================================
 ```
 
 ---
 
+## Автопроверка без лишнего apt update
+
+Cron и systemd timer вызывают native-скрипт в режиме `--check`:
+
+```bash
+warp-wireproxy-native.sh --check --scan-count 25
+```
+
+Начиная с `warp-wireproxy-native.sh v1.1.2`, режим `--check` делает только лёгкую проверку уже установленных команд и не запускает `apt update` / `apt install`. Это важно для cron/timer, чтобы каждые 10 минут не дёргать пакетный менеджер.
+
+---
+
 ## WireGuard `.conf` → JSON для 3x-ui/Xray
 
-Команда конвертирует обычный WireGuard config в JSON-формат, который можно вставить в окно создания outbound на вкладке `JSON`.
+Из файла:
 
 ```bash
 warpwp --wg-json /root/wg0.conf
 ```
 
-или:
+Вставкой прямо в терминал:
 
 ```bash
-warpwp --wg-convert /root/wg0.conf
+warpwp --wg-paste
 ```
 
 Обычный WireGuard config:
@@ -139,7 +155,9 @@ warpwp --wg-convert /root/wg0.conf
 [Interface]
 PrivateKey = CLIENT_PRIVATE_KEY
 Address = 10.0.0.2/32
+Address = fd00::2/128
 DNS = 1.1.1.1
+MTU = 1280
 
 [Peer]
 PublicKey = SERVER_PUBLIC_KEY
@@ -154,10 +172,11 @@ PersistentKeepalive = 25
 {
   "protocol": "wireguard",
   "settings": {
-    "mtu": 1420,
+    "mtu": 1280,
     "secretKey": "CLIENT_PRIVATE_KEY",
     "address": [
-      "10.0.0.2/32"
+      "10.0.0.2/32",
+      "fd00::2/128"
     ],
     "workers": 2,
     "peers": [
@@ -175,6 +194,8 @@ PersistentKeepalive = 25
   }
 }
 ```
+
+Конвертер поддерживает несколько строк `Address`, поэтому IPv4 и IPv6 не теряются.
 
 После создания outbound задай tag, например:
 
@@ -263,6 +284,8 @@ Routing вести на:
 "outboundTag": "WARP"
 ```
 
+Не направляй routing напрямую на `WARP-socks5`; этот outbound используется как промежуточный.
+
 ---
 
 ## zapret4rocket
@@ -347,8 +370,8 @@ shellcheck --severity=warning
 ```text
 warpwp.sh                  единый менеджер с меню
 warp-wireproxy-native.sh   нативный установщик WARP + wireproxy
-install-warp-check.sh      отдельный установщик cron-проверки
-warp-wireproxy-auto.sh     старый вариант через внешний установщик
+install-warp-check.sh      отдельный минимальный установщик cron-проверки
+warp-wireproxy-auto.sh     deprecated-wrapper для обратной совместимости
 TODO.md                    список дальнейших улучшений
 .github/workflows/         CI-проверки bash-скриптов
 ```
