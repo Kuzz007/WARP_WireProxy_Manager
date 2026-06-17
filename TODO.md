@@ -18,7 +18,7 @@
 - [x] `warpwp --wg-json FILE`
   - Конвертирует обычный WireGuard `.conf` из файла в JSON для окна 3x-ui/Xray.
   - Алиас: `warpwp --wg-convert FILE`.
-  - Поддерживает `PrivateKey`, `Address`, `MTU`, `PublicKey`, `PresharedKey`, `Endpoint`, `AllowedIPs`, `PersistentKeepalive`.
+  - Поддерживает `PrivateKey`, несколько `Address`, `MTU`, `PublicKey`, `PresharedKey`, `Endpoint`, `AllowedIPs`, `PersistentKeepalive`.
 
 - [x] `warpwp --quick-scan`
   - Быстрый ремонт endpoint.
@@ -60,9 +60,14 @@
   - Запускает `bash -n` для всех `*.sh`.
   - Запускает `shellcheck`, если он установлен.
   - GitHub Actions теперь использует этот же скрипт.
+- [x] Лёгкий режим `warp-wireproxy-native.sh --check`.
+  - Не запускает `apt update` / `apt install` при cron/timer-проверках.
+- [x] Исправлены legacy-ссылки `Kuzz007/test` на текущий репозиторий.
+- [x] `warp-wireproxy-auto.sh` переведён в deprecated-wrapper.
 
 ## Возможные следующие задачи
 
 - [ ] автообновление README-команд при изменении версии.
 - [ ] release tags / changelog для версий.
 - [ ] проверка CI после каждого push и исправление shellcheck warning.
+- [ ] OpenRC unit для Alpine без systemd, если понадобится.
