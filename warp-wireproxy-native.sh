@@ -5,7 +5,7 @@
 
 set -Eeuo pipefail
 
-VERSION="1.1.2"
+VERSION="1.1.3"
 SOCKS_HOST="127.0.0.1"
 SOCKS_PORT="40000"
 SCAN_COUNT="50"
@@ -197,13 +197,15 @@ ensure_wireproxy_installed() { find_wireproxy_bin >/dev/null 2>&1 && { ok "wirep
 
 backup_existing() {
   mkdir -p /root/warp-wireproxy-native-backup
-  local ts; ts="$(date +%Y%m%d-%H%M%S)"
-  [[ -f "$WARP_CONF" ]] && cp -a "$WARP_CONF" "/root/warp-wireproxy-native-backup/warp.conf.$ts.bak"
-  [[ -f "$PROXY_CONF" ]] && cp -a "$PROXY_CONF" "/root/warp-wireproxy-native-backup/proxy.conf.$ts.bak"
-  [[ -f "$ACCOUNT_JSON" ]] && cp -a "$ACCOUNT_JSON" "/root/warp-wireproxy-native-backup/warp-account.json.$ts.bak"
-  [[ -f "$SERVICE_FILE" ]] && cp -a "$SERVICE_FILE" "/root/warp-wireproxy-native-backup/wireproxy.service.$ts.bak"
-  [[ -f "$GOOD_ENDPOINTS_FILE" ]] && cp -a "$GOOD_ENDPOINTS_FILE" "/root/warp-wireproxy-native-backup/warp-endpoints.good.$ts.bak"
-  [[ -f "$BAD_ENDPOINTS_FILE" ]] && cp -a "$BAD_ENDPOINTS_FILE" "/root/warp-wireproxy-native-backup/warp-endpoints.bad.$ts.bak"
+  local ts
+  ts="$(date +%Y%m%d-%H%M%S)"
+  if [[ -f "$WARP_CONF" ]]; then cp -a "$WARP_CONF" "/root/warp-wireproxy-native-backup/warp.conf.$ts.bak"; fi
+  if [[ -f "$PROXY_CONF" ]]; then cp -a "$PROXY_CONF" "/root/warp-wireproxy-native-backup/proxy.conf.$ts.bak"; fi
+  if [[ -f "$ACCOUNT_JSON" ]]; then cp -a "$ACCOUNT_JSON" "/root/warp-wireproxy-native-backup/warp-account.json.$ts.bak"; fi
+  if [[ -f "$SERVICE_FILE" ]]; then cp -a "$SERVICE_FILE" "/root/warp-wireproxy-native-backup/wireproxy.service.$ts.bak"; fi
+  if [[ -f "$GOOD_ENDPOINTS_FILE" ]]; then cp -a "$GOOD_ENDPOINTS_FILE" "/root/warp-wireproxy-native-backup/warp-endpoints.good.$ts.bak"; fi
+  if [[ -f "$BAD_ENDPOINTS_FILE" ]]; then cp -a "$BAD_ENDPOINTS_FILE" "/root/warp-wireproxy-native-backup/warp-endpoints.bad.$ts.bak"; fi
+  return 0
 }
 
 register_warp_account() {
