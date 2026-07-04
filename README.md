@@ -6,9 +6,42 @@
 3x-ui / Xray → socks5://127.0.0.1:40000 → wireproxy → Cloudflare WARP → internet
 ```
 
-Проект рассчитан на VPS с Linux + systemd. Цель — быстро поднять Cloudflare WARP как локальный SOCKS5 outbound для 3x-ui/Xray, автоматически подобрать рабочий WARP endpoint и поддерживать его живым через один scheduler: cron или systemd timer.
+Проект рассчитан на VPS с Linux + systemd. Цель — быстро поднять Cloudflare WARP как **локальный SOCKS5 outbound** для 3x-ui/Xray, автоматически подобрать рабочий WARP endpoint и поддерживать его живым через один scheduler: cron или systemd timer.
 
 > Alpine/OpenRC как отдельный init-режим не поддерживается: для автозапуска нужен `systemctl`.
+
+## Важно про маршрутизацию
+
+Этот проект **не должен** превращать весь VPS в WARP-VPN клиент. WARP используется только через `wireproxy` и локальный SOCKS5 `127.0.0.1:40000`.
+
+Не запускай WARP-конфиг через `wg-quick`:
+
+```bash
+wg-quick up warp
+systemctl enable --now wg-quick@warp
+```
+
+Если системный `wg-quick@warp` поднимет full-tunnel WARP, входящие подключения могут сломаться: SSH/443 приходят на обычный интерфейс VPS, а ответы уходят через WARP. Это выглядит как «сервер в интернете не отвечает», хотя пакеты до него доходят.
+
+Начиная с `warpwp v1.2.1` и `warp-wireproxy-native.sh v1.1.4` добавлена защита:
+
+- `warpwp --fix-routing` отключает опасный системный WARP full-tunnel и не трогает `wireproxy` SOCKS5;
+- `warpwp --doctor` показывает routing guard: `ip rule`, `table 51820`, `interface warp`, `wg-quick@warp`;
+- `warpwp --install`, `--check`, `--quick-scan`, `--deep-scan` перед работой очищают конфликтующий system-WARP routing;
+- `/etc/wireguard/warp.conf` создаётся как guard-файл: случайный `wg-quick up warp` завершится ошибкой до добавления full-tunnel маршрутов;
+- рабочий конфиг для `wireproxy` остаётся `/etc/wireguard/proxy.conf`.
+
+Аварийное восстановление после сломанного WARP routing:
+
+```bash
+warpwp --fix-routing
+ip route get 1.1.1.1
+ip route get <твой-admin-ip>
+```
+
+Нормально, когда ответы идут через основной интерфейс VPS, например `ens3`, а не через `warp` / `table 51820`.
+
+---
 
 Репозиторий:
 
@@ -19,8 +52,8 @@ https://github.com/Kuzz007/WARP_WireProxy_Manager
 Текущая версия:
 
 ```text
-warpwp v1.2.0
-warp-wireproxy-native.sh v1.1.2
+warpwp v1.2.1
+warp-wireproxy-native.sh v1.1.4
 ```
 
 ---
@@ -57,6 +90,12 @@ warpwp --doctor
 warpwp --status-json
 ```
 
+Починить опасную системную WARP-маршрутизацию:
+
+```bash
+warpwp --fix-routing
+```
+
 ---
 
 ## Основные команды
@@ -71,7 +110,8 @@ warpwp --status-json
 | `warpwp --scheduler-status` | Показать активный scheduler |
 | `warpwp --status` | Показать состояние |
 | `warpwp --status-json` | Показать JSON-статус |
-| `warpwp --doctor` | Расширенная диагностика |
+| `warpwp --doctor` | Расширенная диагностика + routing guard |
+| `warpwp --fix-routing` | Убрать системный WARP full-tunnel, не трогая `wireproxy` SOCKS5 |
 | `warpwp --check` | Обычный ремонт endpoint, `scan-count=25` |
 | `warpwp --quick-scan` | Быстрый ремонт endpoint, `scan-count=15` |
 | `warpwp --deep-scan` | Глубокий ремонт endpoint, `scan-count=150` |
@@ -93,7 +133,7 @@ warpwp --status-json
 
 ```text
 ============================================================
- WARP + wireproxy manager v1.2.0
+ WARP + wireproxy manager v1.2.1
 ============================================================
  1) Установить / обновить WARP + wireproxy + cron
  2) Проверить состояние
@@ -117,6 +157,7 @@ warpwp --status-json
 20) Scheduler status
 21) Вставить WireGuard .conf и получить JSON для 3x-ui
 22) Конвертировать WireGuard .conf файл в JSON для 3x-ui
+23) Fix routing / убрать системный WARP full-tunnel
  0) Выход
 ============================================================
 ```
@@ -131,7 +172,7 @@ Cron и systemd timer вызывают native-скрипт в режиме `--ch
 warp-wireproxy-native.sh --check --scan-count 25
 ```
 
-Начиная с `warp-wireproxy-native.sh v1.1.2`, режим `--check` делает только лёгкую проверку уже установленных команд и не запускает `apt update` / `apt install`. Это важно для cron/timer, чтобы каждые 10 минут не дёргать пакетный менеджер.
+Режим `--check` делает лёгкую проверку уже установленных команд и не запускает `apt update` / `apt install`. Это важно для cron/timer, чтобы каждые 10 минут не дёргать пакетный менеджер.
 
 ---
 
@@ -214,164 +255,4 @@ WG
   ],
   "outboundTag": "WG"
 }
-```
-
----
-
-## Scheduler modes
-
-Cron и systemd timer взаимоисключающие.
-
-Включить cron-режим:
-
-```bash
-warpwp --install-cron
-```
-
-Включить timer-режим:
-
-```bash
-warpwp --install-timer
-```
-
-Передать интервал сразу без вопроса:
-
-```bash
-warpwp --install-timer 15
-```
-
-Проверить активный scheduler:
-
-```bash
-warpwp --scheduler-status
-```
-
----
-
-## JSON-статус
-
-```bash
-warpwp --status-json
-```
-
-JSON включает:
-
-```text
-manager_version
-native_version
-healthy
-scheduler
-service
-socks5
-warp
-cron
-timer
-logs
-cache
-```
-
----
-
-## 3x-ui / Xray
-
-```bash
-warpwp --xray
-```
-
-Routing вести на:
-
-```json
-"outboundTag": "WARP"
-```
-
-Не направляй routing напрямую на `WARP-socks5`; этот outbound используется как промежуточный.
-
----
-
-## zapret4rocket
-
-```bash
-warpwp --zapret
-```
-
-Рекомендуемая строка:
-
-```bash
-NFQWS_PORTS_UDP=443,2408,1843,1010,500,1701,4500,4443,8443,8095
-```
-
-Локальный порт `40000` — это SOCKS5 wireproxy. Его в zapret добавлять не нужно.
-
----
-
-## Проверки
-
-```bash
-warpwp --doctor
-warpwp --status-json
-curl -m 10 -s -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|colo=|loc=|warp='
-```
-
-Хороший результат:
-
-```text
-warp=on
-```
-
----
-
-## Обновление
-
-```bash
-warpwp --update
-```
-
-Через GitHub API, если raw-кэш отдаёт старую версию:
-
-```bash
-curl -fsSL \
-  -H "Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/Kuzz007/WARP_WireProxy_Manager/contents/warpwp.sh?ref=main" \
-  -o /usr/local/bin/warpwp
-
-chmod +x /usr/local/bin/warpwp
-```
-
----
-
-## Удаление
-
-```bash
-warpwp --remove
-warpwp --purge
-```
-
----
-
-## CI
-
-Workflow:
-
-```text
-.github/workflows/shellcheck.yml
-```
-
-Проверяет:
-
-```text
-bash -n
-shellcheck --severity=warning
-```
-
----
-
-## Файлы в репозитории
-
-```text
-warpwp.sh                  единый менеджер с меню
-warp-wireproxy-native.sh   нативный установщик WARP + wireproxy
-install-warp-check.sh      отдельный минимальный установщик cron-проверки
-warp-wireproxy-auto.sh     deprecated-wrapper для обратной совместимости
-TODO.md                    список дальнейших улучшений
-.github/workflows/         CI-проверки bash-скриптов
 ```
