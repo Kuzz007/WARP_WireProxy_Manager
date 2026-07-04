@@ -5,7 +5,7 @@
 
 set -Eeuo pipefail
 
-VERSION="1.1.3"
+VERSION="1.1.4"
 SOCKS_HOST="127.0.0.1"
 SOCKS_PORT="40000"
 SCAN_COUNT="50"
@@ -14,7 +14,8 @@ FORCE_REGISTER="0"
 CHECK_ONLY="0"
 
 WG_DIR="/etc/wireguard"
-WARP_CONF="$WG_DIR/warp.conf"
+WARP_CONF="$WG_DIR/warp.wireproxy.conf"
+LEGACY_WARP_CONF="$WG_DIR/warp.conf"
 PROXY_CONF="$WG_DIR/proxy.conf"
 ACCOUNT_JSON="$WG_DIR/warp-account.json"
 PRIVATE_KEY_FILE="$WG_DIR/warp-private.key"
@@ -42,7 +43,7 @@ warn() { printf '\033[1;33m[ВНИМАНИЕ]\033[0m %s\n' "$*"; }
 err()  { printf '\033[1;31m[ОШИБКА]\033[0m %s\n' "$*" >&2; }
 
 usage() {
-  cat <<EOF
+  cat <<EOF_USAGE
 Использование:
   bash $0 [опции]
 
@@ -56,28 +57,16 @@ usage() {
   --force-register          Создать новый WARP-аккаунт, даже если старый уже есть
   --version                 Показать версию
   -h, --help                Показать справку
-EOF
+EOF_USAGE
 }
 
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
-      --check)
-        CHECK_ONLY="1"
-        shift
-        ;;
-      --port)
-        SOCKS_PORT="${2:-}"
-        shift 2
-        ;;
-      --host)
-        SOCKS_HOST="${2:-}"
-        shift 2
-        ;;
-      --scan-count)
-        SCAN_COUNT="${2:-}"
-        shift 2
-        ;;
+      --check) CHECK_ONLY="1"; shift ;;
+      --port) SOCKS_PORT="${2:-}"; shift 2 ;;
+      --host) SOCKS_HOST="${2:-}"; shift 2 ;;
+      --scan-count) SCAN_COUNT="${2:-}"; shift 2 ;;
       --ports)
         local raw_ports="${2:-}"
         raw_ports="${raw_ports//,/ }"
@@ -91,23 +80,10 @@ parse_args() {
         USE_CUSTOM_ENDPOINTS="1"
         shift 2
         ;;
-      --force-register)
-        FORCE_REGISTER="1"
-        shift
-        ;;
-      --version|-v)
-        echo "warp-wireproxy-native.sh v$VERSION"
-        exit 0
-        ;;
-      -h|--help)
-        usage
-        exit 0
-        ;;
-      *)
-        err "Неизвестная опция: $1"
-        usage
-        exit 1
-        ;;
+      --force-register) FORCE_REGISTER="1"; shift ;;
+      --version|-v) echo "warp-wireproxy-native.sh v$VERSION"; exit 0 ;;
+      -h|--help) usage; exit 0 ;;
+      *) err "Неизвестная опция: $1"; usage; exit 1 ;;
     esac
   done
 }
@@ -116,7 +92,7 @@ require_root() { [[ "${EUID}" -eq 0 ]] || { err "Запусти от root."; exi
 
 check_deps_light() {
   local missing=()
-  for cmd in curl grep sed awk systemctl ss sort head cut date; do
+  for cmd in curl grep sed awk systemctl ss sort head cut date ip; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
   done
   if [[ "${#missing[@]}" -gt 0 ]]; then
@@ -199,13 +175,28 @@ backup_existing() {
   mkdir -p /root/warp-wireproxy-native-backup
   local ts
   ts="$(date +%Y%m%d-%H%M%S)"
-  if [[ -f "$WARP_CONF" ]]; then cp -a "$WARP_CONF" "/root/warp-wireproxy-native-backup/warp.conf.$ts.bak"; fi
-  if [[ -f "$PROXY_CONF" ]]; then cp -a "$PROXY_CONF" "/root/warp-wireproxy-native-backup/proxy.conf.$ts.bak"; fi
-  if [[ -f "$ACCOUNT_JSON" ]]; then cp -a "$ACCOUNT_JSON" "/root/warp-wireproxy-native-backup/warp-account.json.$ts.bak"; fi
-  if [[ -f "$SERVICE_FILE" ]]; then cp -a "$SERVICE_FILE" "/root/warp-wireproxy-native-backup/wireproxy.service.$ts.bak"; fi
-  if [[ -f "$GOOD_ENDPOINTS_FILE" ]]; then cp -a "$GOOD_ENDPOINTS_FILE" "/root/warp-wireproxy-native-backup/warp-endpoints.good.$ts.bak"; fi
-  if [[ -f "$BAD_ENDPOINTS_FILE" ]]; then cp -a "$BAD_ENDPOINTS_FILE" "/root/warp-wireproxy-native-backup/warp-endpoints.bad.$ts.bak"; fi
-  return 0
+  for f in "$WARP_CONF" "$LEGACY_WARP_CONF" "$PROXY_CONF" "$ACCOUNT_JSON" "$SERVICE_FILE" "$GOOD_ENDPOINTS_FILE" "$BAD_ENDPOINTS_FILE"; do
+    [[ -f "$f" ]] && cp -a "$f" "/root/warp-wireproxy-native-backup/$(basename "$f").$ts.bak" || true
+  done
+}
+
+routing_guard_report() {
+  echo "--- WARP routing guard ---"
+  if ip link show warp >/dev/null 2>&1; then warn "Найден системный интерфейс warp. Он может ломать входящие SSH/443."; else ok "interface warp отсутствует."; fi
+  if ip rule show 2>/dev/null | grep -Eq 'lookup (51820|warp)'; then warn "Найдены policy rules WARP:"; ip rule show | grep -E 'lookup (51820|warp)' || true; else ok "policy rules WARP не найдены."; fi
+  if ip route show table 51820 2>/dev/null | grep -q .; then warn "Таблица 51820 не пустая:"; ip route show table 51820 || true; else ok "table 51820 пустая/отсутствует."; fi
+  for svc in wg-quick@warp wg-quick@wgcf warp-svc; do
+    if systemctl is-active --quiet "$svc" 2>/dev/null || systemctl is-enabled --quiet "$svc" 2>/dev/null; then warn "Найден конфликтующий service: $svc"; fi
+  done
+}
+
+cleanup_system_warp_routes() {
+  warn "Проверяю и очищаю системный WARP full-tunnel, если он включён..."
+  systemctl disable --now wg-quick@warp wg-quick@wgcf warp-svc 2>/dev/null || true
+  ip link del warp 2>/dev/null || true
+  while ip rule show 2>/dev/null | grep -Eq 'lookup 51820'; do ip rule del table 51820 2>/dev/null || break; done
+  ip route flush table 51820 2>/dev/null || true
+  ok "Системные WARP routes очищены. wireproxy SOCKS5 не тронут."
 }
 
 register_warp_account() {
@@ -241,6 +232,7 @@ print('PEER_PUBLIC_KEY='+peer.get('public_key','bmXOC+F1QSPGQ2ObwTOu6NWKSLW89kyk
 print('ENDPOINT='+endpoint)
 PY
 }
+
 write_configs() {
   local cfg private address_v4 address_v6 peer_public endpoint
   cfg="$(json_get_config)"
@@ -249,22 +241,26 @@ write_configs() {
   address_v6="$(echo "$cfg" | awk -F= '/^ADDRESS_V6=/{print substr($0,index($0,"=")+1)}')"
   peer_public="$(echo "$cfg" | awk -F= '/^PEER_PUBLIC_KEY=/{print substr($0,index($0,"=")+1)}')"
   endpoint="$(echo "$cfg" | awk -F= '/^ENDPOINT=/{print substr($0,index($0,"=")+1)}')"
-  cat > "$WARP_CONF" <<EOF
+  cat > "$WARP_CONF" <<EOF_WARP
+# Internal WARP config mirror for WARP WireProxy Manager.
+# Do NOT run this file with wg-quick. Use wireproxy.service and $PROXY_CONF.
 [Interface]
 PrivateKey = $private
 Address = $address_v4/32
 Address = $address_v6/128
 DNS = 1.1.1.1
 MTU = 1280
+Table = off
+PreUp = /bin/sh -c 'echo "ERROR: WARP WireProxy Manager uses wireproxy SOCKS5 only; do not run wg-quick with this config." >&2; exit 1'
 
 [Peer]
 PublicKey = $peer_public
 AllowedIPs = 0.0.0.0/0, ::/0
 Endpoint = $endpoint
 PersistentKeepalive = 25
-EOF
+EOF_WARP
   chmod 600 "$WARP_CONF"
-  cat > "$PROXY_CONF" <<EOF
+  cat > "$PROXY_CONF" <<EOF_PROXY
 [Interface]
 PrivateKey = $private
 Address = $address_v4/32
@@ -280,14 +276,41 @@ PersistentKeepalive = 25
 
 [Socks5]
 BindAddress = $SOCKS_HOST:$SOCKS_PORT
-EOF
-  chmod 600 "$PROXY_CONF"; ok "Конфиги созданы. Первичный endpoint: $endpoint"
+EOF_PROXY
+  chmod 600 "$PROXY_CONF"
+  cat > "$LEGACY_WARP_CONF" <<EOF_LEGACY
+# Guard file created by WARP WireProxy Manager.
+# This project uses Cloudflare WARP only through wireproxy SOCKS5: $SOCKS_HOST:$SOCKS_PORT
+# Do NOT run: wg-quick up warp / systemctl enable --now wg-quick@warp
+[Interface]
+PrivateKey = $private
+Address = $address_v4/32
+Address = $address_v6/128
+DNS = 1.1.1.1
+MTU = 1280
+Table = off
+PreUp = /bin/sh -c 'echo "ERROR: do not run /etc/wireguard/warp.conf with wg-quick; use wireproxy.service only." >&2; exit 1'
+
+[Peer]
+PublicKey = $peer_public
+AllowedIPs = 0.0.0.0/0, ::/0
+Endpoint = $endpoint
+PersistentKeepalive = 25
+EOF_LEGACY
+  chmod 600 "$LEGACY_WARP_CONF"
+  ok "Конфиги созданы. Первичный endpoint: $endpoint"
+  ok "Защита от случайного wg-quick@warp включена: $LEGACY_WARP_CONF"
 }
 
-set_endpoint() { local ep="$1"; sed -i "s#^Endpoint[[:space:]]*=.*#Endpoint = $ep#I" "$WARP_CONF"; sed -i "s#^Endpoint[[:space:]]*=.*#Endpoint = $ep#I" "$PROXY_CONF"; }
+set_endpoint() {
+  local ep="$1"
+  [[ -f "$WARP_CONF" ]] && sed -i "s#^Endpoint[[:space:]]*=.*#Endpoint = $ep#I" "$WARP_CONF"
+  [[ -f "$LEGACY_WARP_CONF" ]] && sed -i "s#^Endpoint[[:space:]]*=.*#Endpoint = $ep#I" "$LEGACY_WARP_CONF"
+  sed -i "s#^Endpoint[[:space:]]*=.*#Endpoint = $ep#I" "$PROXY_CONF"
+}
 create_service() {
   local bin; bin="$(find_wireproxy_bin)"
-  cat > "$SERVICE_FILE" <<EOF
+  cat > "$SERVICE_FILE" <<EOF_SERVICE
 [Unit]
 Description=WireProxy for WARP
 Documentation=https://github.com/pufferffish/wireproxy
@@ -303,7 +326,7 @@ LimitNOFILE=1048576
 
 [Install]
 WantedBy=multi-user.target
-EOF
+EOF_SERVICE
   systemctl daemon-reload; systemctl enable wireproxy >/dev/null 2>&1 || true; ok "wireproxy.service создан."
 }
 ensure_service_exists() { [[ -f "$SERVICE_FILE" ]] || systemctl list-unit-files 2>/dev/null | grep -q '^wireproxy\.service' && return 0; find_wireproxy_bin >/dev/null 2>&1 && [[ -f "$PROXY_CONF" ]] && { create_service; return 0; }; return 1; }
@@ -322,9 +345,9 @@ test_endpoint() { local ep="$1" trace_file="/tmp/warp_native_trace.$$" rc=0; set
 select_best_endpoint() { generate_endpoint_candidates; : > "$RESULT_FILE"; local ep best_line; while IFS= read -r ep; do [[ -z "$ep" ]] && continue; log "Проверяю $ep"; test_endpoint "$ep" && ok "$ep работает" || warn "$ep не подошёл"; done < "$CANDIDATES_FILE"; echo; echo "=== Результаты проверки ==="; command -v column >/dev/null 2>&1 && column -t -s $'\t' "$RESULT_FILE" || cat "$RESULT_FILE"; best_line="$(awk -F'\t' '$2=="OK"{print $0}' "$RESULT_FILE" | sort -t $'\t' -k3,3n | head -n1 || true)"; [[ -n "$best_line" ]] || { err "Не найден endpoint с warp=on. Попробуй --scan-count 150 или --endpoints от внешнего сканера."; exit 1; }; BEST_ENDPOINT="$(printf '%s' "$best_line" | awk -F'\t' '{print $1}')"; BEST_TIME="$(printf '%s' "$best_line" | awk -F'\t' '{print $3}')"; BEST_COLO="$(printf '%s' "$best_line" | awk -F'\t' '{print $5}')"; BEST_LOC="$(printf '%s' "$best_line" | awk -F'\t' '{print $6}')"; set_endpoint "$BEST_ENDPOINT"; restart_wireproxy; remember_good_endpoint "$BEST_ENDPOINT" "$BEST_TIME" "$BEST_COLO" "$BEST_LOC"; ok "Выбран endpoint: $BEST_ENDPOINT time_total=$BEST_TIME colo=$BEST_COLO loc=$BEST_LOC"; }
 final_check() { BEST_TRACE="$(curl -m 15 -s -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" "$TEST_URL" | grep -E 'ip=|colo=|loc=|warp=' || true)"; echo "$BEST_TRACE"; echo "$BEST_TRACE" | grep -q '^warp=on' || { err "Финальная проверка не показала warp=on."; systemctl status wireproxy --no-pager -l | head -80 || true; exit 1; }; ok "WARP работает: warp=on"; }
 
-run_check_and_repair() { log "Режим проверки: проверяю текущий WARP без переустановки и без apt update."; [[ -f "$PROXY_CONF" && -f "$WARP_CONF" ]] || { err "Не найдены $PROXY_CONF или $WARP_CONF. Сначала запусти обычную установку без --check."; exit 1; }; find_wireproxy_bin >/dev/null 2>&1 || { err "wireproxy не найден. Сначала запусти обычную установку без --check."; exit 1; }; ensure_service_exists || create_service; systemctl restart wireproxy || true; sleep 2; check_port; if quick_warp_check; then ok "WARP живой, endpoint менять не нужно."; echo "$BEST_TRACE"; echo; echo "Текущий endpoint: $(get_current_endpoint)"; echo "Кэш good endpoint'ов: $GOOD_ENDPOINTS_FILE"; exit 0; fi; warn "WARP не отвечает или нет warp=on. Запускаю быстрый перескан endpoint'ов..."; backup_existing; select_best_endpoint; final_check; echo; ok "Endpoint был автоматически заменён на рабочий: $BEST_ENDPOINT"; print_result; }
+run_check_and_repair() { cleanup_system_warp_routes; log "Режим проверки: проверяю текущий WARP без переустановки и без apt update."; [[ -f "$PROXY_CONF" ]] || { err "Не найден $PROXY_CONF. Сначала запусти обычную установку без --check."; exit 1; }; find_wireproxy_bin >/dev/null 2>&1 || { err "wireproxy не найден. Сначала запусти обычную установку без --check."; exit 1; }; ensure_service_exists || create_service; systemctl restart wireproxy || true; sleep 2; check_port; if quick_warp_check; then ok "WARP живой, endpoint менять не нужно."; echo "$BEST_TRACE"; echo; echo "Текущий endpoint: $(get_current_endpoint)"; echo "Кэш good endpoint'ов: $GOOD_ENDPOINTS_FILE"; exit 0; fi; warn "WARP не отвечает или нет warp=on. Запускаю быстрый перескан endpoint'ов..."; backup_existing; select_best_endpoint; final_check; echo; ok "Endpoint был автоматически заменён на рабочий: $BEST_ENDPOINT"; print_result; }
 
-print_result() { local endpoint_port; endpoint_port="${BEST_ENDPOINT##*:}"; cat <<EOF
+print_result() { local endpoint_port; endpoint_port="${BEST_ENDPOINT##*:}"; cat <<EOF_RESULT
 
 ============================================================
 ГОТОВО
@@ -356,6 +379,7 @@ $(echo "$BEST_TRACE" | sed 's/^/  /')
 }
 
 Важно: в routing указывай "WARP", не "WARP-socks5".
+Не запускай wg-quick@warp: этот проект использует WARP только через wireproxy SOCKS5.
 
 zapret4rocket:
   NFQWS_PORTS_UDP=$ZAPRET_PORTS
@@ -364,8 +388,8 @@ zapret4rocket:
 Проверить вручную:
   curl -m 10 -s -x socks5h://$SOCKS_HOST:$SOCKS_PORT https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|colo=|loc=|warp='
 
-EOF
+EOF_RESULT
 }
 cleanup() { rm -f "$RESULT_FILE" "$CANDIDATES_FILE" /tmp/warp_native_trace.$$ 2>/dev/null || true; }
-main() { trap cleanup EXIT; parse_args "$@"; require_root; if [[ "$CHECK_ONLY" == "1" ]]; then check_deps_light; run_check_and_repair; exit 0; fi; install_deps; ensure_wireproxy_installed; backup_existing; register_warp_account; write_configs; create_service; restart_wireproxy; check_port; select_best_endpoint; final_check; print_result; }
+main() { trap cleanup EXIT; parse_args "$@"; require_root; if [[ "$CHECK_ONLY" == "1" ]]; then check_deps_light; run_check_and_repair; exit 0; fi; install_deps; cleanup_system_warp_routes; ensure_wireproxy_installed; backup_existing; register_warp_account; write_configs; create_service; restart_wireproxy; check_port; select_best_endpoint; final_check; routing_guard_report; print_result; }
 main "$@"
