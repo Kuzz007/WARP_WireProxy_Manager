@@ -256,3 +256,180 @@ WG
   "outboundTag": "WG"
 }
 ```
+
+---
+
+## Scheduler modes
+
+Cron и systemd timer взаимоисключающие.
+
+Включить cron-режим:
+
+```bash
+warpwp --install-cron
+```
+
+Включить timer-режим:
+
+```bash
+warpwp --install-timer
+```
+
+Передать интервал сразу без вопроса:
+
+```bash
+warpwp --install-timer 15
+```
+
+Проверить активный scheduler:
+
+```bash
+warpwp --scheduler-status
+```
+
+---
+
+## JSON-статус
+
+```bash
+warpwp --status-json
+```
+
+JSON включает:
+
+```text
+manager_version
+native_version
+healthy
+scheduler
+service
+socks5
+warp
+routing_guard
+cron
+timer
+logs
+cache
+```
+
+---
+
+## 3x-ui / Xray
+
+```bash
+warpwp --xray
+```
+
+Routing вести на:
+
+```json
+"outboundTag": "WARP"
+```
+
+Не направляй routing напрямую на `WARP-socks5`; этот outbound используется как промежуточный.
+
+---
+
+## zapret4rocket
+
+```bash
+warpwp --zapret
+```
+
+Рекомендуемая строка:
+
+```bash
+NFQWS_PORTS_UDP=443,2408,1843,1010,500,1701,4500,4443,8443,8095
+```
+
+Локальный порт `40000` — это SOCKS5 wireproxy. Его в zapret добавлять не нужно.
+
+---
+
+## Проверки
+
+```bash
+warpwp --doctor
+warpwp --status-json
+curl -m 10 -s -x socks5h://127.0.0.1:40000 https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|colo=|loc=|warp='
+```
+
+Хороший результат:
+
+```text
+warp=on
+```
+
+Для маршрутизации должно быть чисто:
+
+```bash
+ip rule
+ip route show table 51820
+ip link show warp
+```
+
+Хорошее состояние:
+
+```text
+0:      from all lookup local
+32766:  from all lookup main
+32767:  from all lookup default
+```
+
+---
+
+## Обновление
+
+```bash
+warpwp --update
+```
+
+Через GitHub API, если raw-кэш отдаёт старую версию:
+
+```bash
+curl -fsSL \
+  -H "Accept: application/vnd.github.raw" \
+  "https://api.github.com/repos/Kuzz007/WARP_WireProxy_Manager/contents/warpwp.sh?ref=main" \
+  -o /usr/local/bin/warpwp
+
+chmod +x /usr/local/bin/warpwp
+```
+
+---
+
+## Удаление
+
+```bash
+warpwp --remove
+warpwp --purge
+```
+
+---
+
+## CI
+
+Workflow:
+
+```text
+.github/workflows/shellcheck.yml
+```
+
+Проверяет:
+
+```text
+bash -n
+shellcheck --severity=warning
+```
+
+---
+
+## Файлы в репозитории
+
+```text
+warpwp.sh                  единый менеджер с меню
+warp-wireproxy-native.sh   нативный установщик WARP + wireproxy
+install-warp-check.sh      отдельный минимальный установщик cron-проверки
+warp-wireproxy-auto.sh     deprecated-wrapper для обратной совместимости
+TODO.md                    список дальнейших улучшений
+.github/workflows/         CI-проверки bash-скриптов
+```
