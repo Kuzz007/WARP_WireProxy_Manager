@@ -345,7 +345,7 @@ EOF_SERVICE
 ensure_service_exists() { [[ -f "$SERVICE_FILE" ]] || systemctl list-unit-files 2>/dev/null | grep -q '^wireproxy\.service' && return 0; find_wireproxy_bin >/dev/null 2>&1 && [[ -f "$PROXY_CONF" ]] && { create_service; return 0; }; return 1; }
 # wireproxy занимает порт за доли секунды. Опрос вместо фиксированного
 # sleep 2 экономит почти всё время перебора кандидатов.
-wait_for_socks_port() { local tries="${1:-$PORT_WAIT_TRIES}" i; for ((i = 0; i < tries; i++)); do if ss -lnt 2>/dev/null | grep -q "$SOCKS_HOST:$SOCKS_PORT"; then return 0; fi; sleep 0.1; done; return 1; }
+wait_for_socks_port() { local i; for ((i = 0; i < PORT_WAIT_TRIES; i++)); do if ss -lnt 2>/dev/null | grep -q "$SOCKS_HOST:$SOCKS_PORT"; then return 0; fi; sleep 0.1; done; return 1; }
 restart_wireproxy() { ensure_service_exists || { err "wireproxy.service отсутствует, а $PROXY_CONF или бинарник wireproxy не найден."; exit 1; }; systemctl restart wireproxy; wait_for_socks_port || sleep 2; }
 check_port() { ss -lntup 2>/dev/null | grep -q "$SOCKS_HOST:$SOCKS_PORT" && ok "SOCKS5 слушает $SOCKS_HOST:$SOCKS_PORT" || { warn "SOCKS5 порт пока не виден. Статус wireproxy:"; systemctl status wireproxy --no-pager -l | head -80 || true; }; }
 get_current_endpoint() { grep -i '^Endpoint' "$PROXY_CONF" 2>/dev/null | head -n1 | awk -F= '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}'; }
