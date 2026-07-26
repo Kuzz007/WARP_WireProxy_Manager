@@ -5,13 +5,21 @@
 
 set -Eeuo pipefail
 
-VERSION="1.1.5"
+VERSION="1.1.6"
 SOCKS_HOST="127.0.0.1"
 SOCKS_PORT="40000"
 SCAN_COUNT="50"
 USE_CUSTOM_ENDPOINTS="0"
 FORCE_REGISTER="0"
 CHECK_ONLY="0"
+
+# Сколько рабочих endpoint'ов достаточно, чтобы прекратить перебор и выбрать
+# лучший из найденных. Без этого --deep-scan гонял все 150 полных проверок
+# даже когда рабочий нашёлся на первой.
+ENOUGH_GOOD="3"
+PROBE_TIMEOUT="8"     # curl-таймаут при переборе кандидатов
+FINAL_TIMEOUT="15"    # curl-таймаут финальной проверки
+PORT_WAIT_TRIES="30"  # 30 x 0.1s = 3s ожидания, пока wireproxy займёт порт
 
 WG_DIR="/etc/wireguard"
 WARP_CONF="$WG_DIR/warp.wireproxy.conf"
@@ -54,6 +62,8 @@ usage() {
   --port <порт>             Локальный SOCKS5-порт. По умолчанию: 40000
   --host <хост>             Bind-адрес SOCKS5. По умолчанию: 127.0.0.1
   --scan-count <число>      Сколько случайных endpoint'ов проверить. По умолчанию: 50
+  --enough-good <число>     Сколько рабочих endpoint'ов набрать, чтобы прекратить
+                            перебор и выбрать лучший из них. По умолчанию: 3
   --ports "список"          Порты для сканирования, через пробел или запятую
   --endpoints "список"      Проверить конкретные endpoint'ы вместо автосканирования
   --force-register          Создать новый WARP-аккаунт, даже если старый уже есть
@@ -82,6 +92,7 @@ parse_args() {
         USE_CUSTOM_ENDPOINTS="1"
         shift 2
         ;;
+      --enough-good) ENOUGH_GOOD="${2:-}"; shift 2 ;;
       --force-register) FORCE_REGISTER="1"; shift ;;
       --version|-v) echo "warp-wireproxy-native.sh v$VERSION"; exit 0 ;;
       -h|--help) usage; exit 0 ;;
@@ -332,20 +343,85 @@ EOF_SERVICE
   systemctl daemon-reload; systemctl enable wireproxy >/dev/null 2>&1 || true; ok "wireproxy.service создан."
 }
 ensure_service_exists() { [[ -f "$SERVICE_FILE" ]] || systemctl list-unit-files 2>/dev/null | grep -q '^wireproxy\.service' && return 0; find_wireproxy_bin >/dev/null 2>&1 && [[ -f "$PROXY_CONF" ]] && { create_service; return 0; }; return 1; }
-restart_wireproxy() { ensure_service_exists || { err "wireproxy.service отсутствует, а $PROXY_CONF или бинарник wireproxy не найден."; exit 1; }; systemctl restart wireproxy; sleep 2; }
+# wireproxy занимает порт за доли секунды. Опрос вместо фиксированного
+# sleep 2 экономит почти всё время перебора кандидатов.
+wait_for_socks_port() { local tries="${1:-$PORT_WAIT_TRIES}" i; for ((i = 0; i < tries; i++)); do if ss -lnt 2>/dev/null | grep -q "$SOCKS_HOST:$SOCKS_PORT"; then return 0; fi; sleep 0.1; done; return 1; }
+restart_wireproxy() { ensure_service_exists || { err "wireproxy.service отсутствует, а $PROXY_CONF или бинарник wireproxy не найден."; exit 1; }; systemctl restart wireproxy; wait_for_socks_port || sleep 2; }
 check_port() { ss -lntup 2>/dev/null | grep -q "$SOCKS_HOST:$SOCKS_PORT" && ok "SOCKS5 слушает $SOCKS_HOST:$SOCKS_PORT" || { warn "SOCKS5 порт пока не виден. Статус wireproxy:"; systemctl status wireproxy --no-pager -l | head -80 || true; }; }
 get_current_endpoint() { grep -i '^Endpoint' "$PROXY_CONF" 2>/dev/null | head -n1 | awk -F= '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}'; }
 
-quick_warp_check() { local trace endpoint; trace="$(curl -m 8 -s -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" "$TEST_URL" | grep -E 'ip=|colo=|loc=|warp=' || true)"; if echo "$trace" | grep -q '^warp=on'; then BEST_TRACE="$trace"; endpoint="$(get_current_endpoint || true)"; [[ -n "$endpoint" ]] && remember_good_endpoint "$endpoint" "0" "quick" "quick"; return 0; fi; BEST_TRACE="$trace"; return 1; }
+quick_warp_check() {
+  local raw trace endpoint time_total colo loc
+  raw="$(LC_ALL=C curl -m "$PROBE_TIMEOUT" -s -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" -w '\n__TIME_TOTAL__=%{time_total}\n' "$TEST_URL" 2>/dev/null || true)"
+  trace="$(printf '%s\n' "$raw" | grep -E '^(ip|colo|loc|warp)=' || true)"
+  BEST_TRACE="$trace"
+  printf '%s\n' "$trace" | grep -q '^warp=on' || return 1
+  endpoint="$(get_current_endpoint || true)"
+  if [[ -n "$endpoint" ]]; then
+    # Пишем настоящее время ответа: раньше сюда шёл ноль, из-за чего любой
+    # успешный quick-check намертво прибивал текущий endpoint к вершине
+    # good-кэша и рейтинг переставал что-либо значить.
+    time_total="$(printf '%s\n' "$raw" | grep -m1 '^__TIME_TOTAL__=' | cut -d= -f2- || true)"
+    colo="$(printf '%s\n' "$trace" | awk -F= '$1=="colo"{print $2; exit}')"
+    loc="$(printf '%s\n' "$trace" | awk -F= '$1=="loc"{print $2; exit}')"
+    remember_good_endpoint "$endpoint" "${time_total:-9}" "${colo:-unknown}" "${loc:-unknown}"
+  fi
+  return 0
+}
 remember_good_endpoint() { local ep="${1:-}" time="${2:-0}" colo="${3:-unknown}" loc="${4:-unknown}" ts; [[ -z "$ep" ]] && return 0; mkdir -p "$WG_DIR"; ts="$(date +%s)"; touch "$GOOD_ENDPOINTS_FILE" "$BAD_ENDPOINTS_FILE"; awk -v ep="$ep" -F'\t' '$1 != ep {print}' "$GOOD_ENDPOINTS_FILE" > "${GOOD_ENDPOINTS_FILE}.tmp" 2>/dev/null || true; mv "${GOOD_ENDPOINTS_FILE}.tmp" "$GOOD_ENDPOINTS_FILE" 2>/dev/null || true; printf '%s\t%s\t%s\t%s\t%s\n' "$ep" "$time" "$colo" "$loc" "$ts" >> "$GOOD_ENDPOINTS_FILE"; LC_ALL=C sort -t $'\t' -k2,2n "$GOOD_ENDPOINTS_FILE" | head -n 30 > "${GOOD_ENDPOINTS_FILE}.tmp" || true; mv "${GOOD_ENDPOINTS_FILE}.tmp" "$GOOD_ENDPOINTS_FILE" 2>/dev/null || true; awk -v ep="$ep" -F'\t' '$1 != ep {print}' "$BAD_ENDPOINTS_FILE" > "${BAD_ENDPOINTS_FILE}.tmp" 2>/dev/null || true; mv "${BAD_ENDPOINTS_FILE}.tmp" "$BAD_ENDPOINTS_FILE" 2>/dev/null || true; }
 remember_bad_endpoint() { local ep="${1:-}" ts count; [[ -z "$ep" ]] && return 0; mkdir -p "$WG_DIR"; touch "$BAD_ENDPOINTS_FILE"; ts="$(date +%s)"; count="$(awk -v ep="$ep" -F'\t' '$1 == ep {print $2}' "$BAD_ENDPOINTS_FILE" 2>/dev/null | tail -n1)"; count="${count:-0}"; count=$((count + 1)); awk -v ep="$ep" -F'\t' '$1 != ep {print}' "$BAD_ENDPOINTS_FILE" > "${BAD_ENDPOINTS_FILE}.tmp" 2>/dev/null || true; mv "${BAD_ENDPOINTS_FILE}.tmp" "$BAD_ENDPOINTS_FILE" 2>/dev/null || true; printf '%s\t%s\t%s\n' "$ep" "$count" "$ts" >> "$BAD_ENDPOINTS_FILE"; tail -n 200 "$BAD_ENDPOINTS_FILE" > "${BAD_ENDPOINTS_FILE}.tmp" || true; mv "${BAD_ENDPOINTS_FILE}.tmp" "$BAD_ENDPOINTS_FILE" 2>/dev/null || true; }
 is_bad_endpoint() { local ep="${1:-}" now ts count age; [[ -z "$ep" || ! -f "$BAD_ENDPOINTS_FILE" ]] && return 1; now="$(date +%s)"; count="$(awk -v ep="$ep" -F'\t' '$1 == ep {print $2}' "$BAD_ENDPOINTS_FILE" | tail -n1)"; ts="$(awk -v ep="$ep" -F'\t' '$1 == ep {print $3}' "$BAD_ENDPOINTS_FILE" | tail -n1)"; count="${count:-0}"; ts="${ts:-0}"; age=$((now - ts)); [[ "$count" -ge 3 && "$age" -lt 86400 ]]; }
 append_candidate() { local ep="${1:-}"; [[ -z "$ep" ]] && return 0; is_bad_endpoint "$ep" && return 0; grep -qxF "$ep" "$CANDIDATES_FILE" 2>/dev/null || echo "$ep" >> "$CANDIDATES_FILE"; }
 generate_endpoint_candidates() { : > "$CANDIDATES_FILE"; local current_endpoint ep made attempts prefix last_octet port; current_endpoint="$(get_current_endpoint || true)"; [[ -n "$current_endpoint" ]] && append_candidate "$current_endpoint"; if [[ -f "$GOOD_ENDPOINTS_FILE" ]]; then while IFS=$'\t' read -r ep _rest; do append_candidate "$ep"; done < <(LC_ALL=C sort -t $'\t' -k2,2n "$GOOD_ENDPOINTS_FILE" | head -n 20); fi; if [[ "$USE_CUSTOM_ENDPOINTS" == "1" ]]; then for ep in "${CUSTOM_ENDPOINTS[@]}"; do append_candidate "$ep"; done; return 0; fi; for ep in engage.cloudflareclient.com:2408 162.159.192.244:1843 162.159.195.100:1010 162.159.193.10:2408 188.114.96.10:2408 188.114.97.10:2408; do append_candidate "$ep"; done; made=0; attempts=0; while [[ "$made" -lt "$SCAN_COUNT" && "$attempts" -lt $((SCAN_COUNT * 10 + 200)) ]]; do attempts=$((attempts + 1)); prefix="${WARP_PREFIXES[$((RANDOM % ${#WARP_PREFIXES[@]}))]}"; last_octet="$((RANDOM % 256))"; port="${WARP_PORTS[$((RANDOM % ${#WARP_PORTS[@]}))]}"; ep="${prefix}.${last_octet}:${port}"; if ! grep -qxF "$ep" "$CANDIDATES_FILE" 2>/dev/null && ! is_bad_endpoint "$ep"; then echo "$ep" >> "$CANDIDATES_FILE"; made=$((made + 1)); fi; done; ok "Кандидатов endpoint: $(wc -l < "$CANDIDATES_FILE" | tr -d ' ')"; }
 
-test_endpoint() { local ep="$1" trace_file="/tmp/warp_native_trace.$$" rc=0; set_endpoint "$ep"; restart_wireproxy; LC_ALL=C curl -m 15 -sS -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" -w '\n__TIME_TOTAL__=%{time_total}\n__HTTP_CODE__=%{http_code}\n' "$TEST_URL" > "$trace_file" 2>/dev/null || rc=$?; if [[ "$rc" -ne 0 ]]; then printf '%s\tFAIL\tcurl_rc=%s\t-\t-\t-\t-\n' "$ep" "$rc" >> "$RESULT_FILE"; remember_bad_endpoint "$ep"; rm -f "$trace_file"; return 1; fi; local warp ip colo loc time_total http_code; warp="$(grep -m1 '^warp=' "$trace_file" | cut -d= -f2- || true)"; ip="$(grep -m1 '^ip=' "$trace_file" | cut -d= -f2- || true)"; colo="$(grep -m1 '^colo=' "$trace_file" | cut -d= -f2- || true)"; loc="$(grep -m1 '^loc=' "$trace_file" | cut -d= -f2- || true)"; time_total="$(grep -m1 '^__TIME_TOTAL__=' "$trace_file" | cut -d= -f2- || true)"; http_code="$(grep -m1 '^__HTTP_CODE__=' "$trace_file" | cut -d= -f2- || true)"; if [[ "$http_code" == "200" && "$warp" == "on" && -n "$time_total" ]]; then printf '%s\tOK\t%s\t%s\t%s\t%s\t%s\n' "$ep" "$time_total" "$ip" "$colo" "$loc" "$warp" >> "$RESULT_FILE"; remember_good_endpoint "$ep" "$time_total" "$colo" "$loc"; rm -f "$trace_file"; return 0; fi; printf '%s\tFAIL\thttp=%s time=%s ip=%s colo=%s loc=%s warp=%s\n' "$ep" "$http_code" "$time_total" "$ip" "$colo" "$loc" "$warp" >> "$RESULT_FILE"; remember_bad_endpoint "$ep"; rm -f "$trace_file"; return 1; }
-select_best_endpoint() { generate_endpoint_candidates; : > "$RESULT_FILE"; local ep best_line; while IFS= read -r ep; do [[ -z "$ep" ]] && continue; log "Проверяю $ep"; test_endpoint "$ep" && ok "$ep работает" || warn "$ep не подошёл"; done < "$CANDIDATES_FILE"; echo; echo "=== Результаты проверки ==="; command -v column >/dev/null 2>&1 && column -t -s $'\t' "$RESULT_FILE" || cat "$RESULT_FILE"; best_line="$(awk -F'\t' '$2=="OK"{print $0}' "$RESULT_FILE" | LC_ALL=C sort -t $'\t' -k3,3n | head -n1 || true)"; [[ -n "$best_line" ]] || { err "Не найден endpoint с warp=on. Попробуй --scan-count 150 или --endpoints от внешнего сканера."; exit 1; }; BEST_ENDPOINT="$(printf '%s' "$best_line" | awk -F'\t' '{print $1}')"; BEST_TIME="$(printf '%s' "$best_line" | awk -F'\t' '{print $3}')"; BEST_COLO="$(printf '%s' "$best_line" | awk -F'\t' '{print $5}')"; BEST_LOC="$(printf '%s' "$best_line" | awk -F'\t' '{print $6}')"; set_endpoint "$BEST_ENDPOINT"; restart_wireproxy; remember_good_endpoint "$BEST_ENDPOINT" "$BEST_TIME" "$BEST_COLO" "$BEST_LOC"; ok "Выбран endpoint: $BEST_ENDPOINT time_total=$BEST_TIME colo=$BEST_COLO loc=$BEST_LOC"; }
-final_check() { BEST_TRACE="$(curl -m 15 -s -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" "$TEST_URL" | grep -E 'ip=|colo=|loc=|warp=' || true)"; echo "$BEST_TRACE"; echo "$BEST_TRACE" | grep -q '^warp=on' || { err "Финальная проверка не показала warp=on."; systemctl status wireproxy --no-pager -l | head -80 || true; exit 1; }; ok "WARP работает: warp=on"; }
+test_endpoint() { local ep="$1" trace_file="/tmp/warp_native_trace.$$" rc=0; set_endpoint "$ep"; restart_wireproxy; LC_ALL=C curl -m "$PROBE_TIMEOUT" -sS -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" -w '\n__TIME_TOTAL__=%{time_total}\n__HTTP_CODE__=%{http_code}\n' "$TEST_URL" > "$trace_file" 2>/dev/null || rc=$?; if [[ "$rc" -ne 0 ]]; then printf '%s\tFAIL\tcurl_rc=%s\t-\t-\t-\t-\n' "$ep" "$rc" >> "$RESULT_FILE"; remember_bad_endpoint "$ep"; rm -f "$trace_file"; return 1; fi; local warp ip colo loc time_total http_code; warp="$(grep -m1 '^warp=' "$trace_file" | cut -d= -f2- || true)"; ip="$(grep -m1 '^ip=' "$trace_file" | cut -d= -f2- || true)"; colo="$(grep -m1 '^colo=' "$trace_file" | cut -d= -f2- || true)"; loc="$(grep -m1 '^loc=' "$trace_file" | cut -d= -f2- || true)"; time_total="$(grep -m1 '^__TIME_TOTAL__=' "$trace_file" | cut -d= -f2- || true)"; http_code="$(grep -m1 '^__HTTP_CODE__=' "$trace_file" | cut -d= -f2- || true)"; if [[ "$http_code" == "200" && "$warp" == "on" && -n "$time_total" ]]; then printf '%s\tOK\t%s\t%s\t%s\t%s\t%s\n' "$ep" "$time_total" "$ip" "$colo" "$loc" "$warp" >> "$RESULT_FILE"; remember_good_endpoint "$ep" "$time_total" "$colo" "$loc"; rm -f "$trace_file"; return 0; fi; printf '%s\tFAIL\thttp=%s time=%s ip=%s colo=%s loc=%s warp=%s\n' "$ep" "$http_code" "$time_total" "$ip" "$colo" "$loc" "$warp" >> "$RESULT_FILE"; remember_bad_endpoint "$ep"; rm -f "$trace_file"; return 1; }
+select_best_endpoint() {
+  generate_endpoint_candidates
+  : > "$RESULT_FILE"
+  local ep best_line original_endpoint total good_count=0 tested=0
+  # Перебор переписывает Endpoint прямо в боевом конфиге, поэтому запоминаем
+  # исходный: если ни один кандидат не взлетит, надо вернуть как было, а не
+  # оставить в proxy.conf последний случайный адрес.
+  original_endpoint="$(get_current_endpoint || true)"
+  total="$(wc -l < "$CANDIDATES_FILE" | tr -d ' ')"
+  while IFS= read -r ep; do
+    [[ -z "$ep" ]] && continue
+    tested=$((tested + 1))
+    log "Проверяю $ep"
+    if test_endpoint "$ep"; then
+      ok "$ep работает"
+      good_count=$((good_count + 1))
+      if [[ "$good_count" -ge "$ENOUGH_GOOD" ]]; then
+        log "Набрано рабочих endpoint'ов: $good_count. Останавливаю перебор."
+        break
+      fi
+    else
+      warn "$ep не подошёл"
+    fi
+  done < "$CANDIDATES_FILE"
+  if [[ "$tested" -lt "$total" ]]; then log "Проверено кандидатов: $tested из $total (ранняя остановка)."; fi
+  echo; echo "=== Результаты проверки ==="
+  command -v column >/dev/null 2>&1 && column -t -s $'\t' "$RESULT_FILE" || cat "$RESULT_FILE"
+  best_line="$(awk -F'\t' '$2=="OK"{print $0}' "$RESULT_FILE" | LC_ALL=C sort -t $'\t' -k3,3n | head -n1 || true)"
+  if [[ -z "$best_line" ]]; then
+    if [[ -n "$original_endpoint" ]]; then
+      warn "Рабочий endpoint не найден. Возвращаю прежний: $original_endpoint"
+      set_endpoint "$original_endpoint"
+      systemctl restart wireproxy 2>/dev/null || true
+    fi
+    err "Не найден endpoint с warp=on. Попробуй --scan-count 150 или --endpoints от внешнего сканера."
+    exit 1
+  fi
+  BEST_ENDPOINT="$(printf '%s' "$best_line" | awk -F'\t' '{print $1}')"
+  BEST_TIME="$(printf '%s' "$best_line" | awk -F'\t' '{print $3}')"
+  BEST_COLO="$(printf '%s' "$best_line" | awk -F'\t' '{print $5}')"
+  BEST_LOC="$(printf '%s' "$best_line" | awk -F'\t' '{print $6}')"
+  set_endpoint "$BEST_ENDPOINT"
+  restart_wireproxy
+  remember_good_endpoint "$BEST_ENDPOINT" "$BEST_TIME" "$BEST_COLO" "$BEST_LOC"
+  ok "Выбран endpoint: $BEST_ENDPOINT time_total=$BEST_TIME colo=$BEST_COLO loc=$BEST_LOC"
+}
+final_check() { BEST_TRACE="$(curl -m "$FINAL_TIMEOUT" -s -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" "$TEST_URL" | grep -E 'ip=|colo=|loc=|warp=' || true)"; echo "$BEST_TRACE"; echo "$BEST_TRACE" | grep -q '^warp=on' || { err "Финальная проверка не показала warp=on."; systemctl status wireproxy --no-pager -l | head -80 || true; exit 1; }; ok "WARP работает: warp=on"; }
 
 run_check_and_repair() { cleanup_system_warp_routes; log "Режим проверки: проверяю текущий WARP без переустановки и без apt update."; [[ -f "$PROXY_CONF" ]] || { err "Не найден $PROXY_CONF. Сначала запусти обычную установку без --check."; exit 1; }; find_wireproxy_bin >/dev/null 2>&1 || { err "wireproxy не найден. Сначала запусти обычную установку без --check."; exit 1; }; ensure_service_exists || create_service; systemctl restart wireproxy || true; sleep 2; check_port; if quick_warp_check; then ok "WARP живой, endpoint менять не нужно."; echo "$BEST_TRACE"; echo; echo "Текущий endpoint: $(get_current_endpoint)"; echo "Кэш good endpoint'ов: $GOOD_ENDPOINTS_FILE"; exit 0; fi; warn "WARP не отвечает или нет warp=on. Запускаю быстрый перескан endpoint'ов..."; backup_existing; select_best_endpoint; final_check; echo; ok "Endpoint был автоматически заменён на рабочий: $BEST_ENDPOINT"; print_result; }
 
