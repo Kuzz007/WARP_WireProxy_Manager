@@ -18,10 +18,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install shellcheck
+      # Версия закреплена в .shellcheck-version и ставится из релизов koalaman.
+      # Версия из apt дрейфует вместе с образом раннера, из-за чего локальная
+      # проверка и CI расходились в наборе правил.
+      - name: Install pinned shellcheck
         run: |
-          sudo apt-get update
-          sudo apt-get install -y shellcheck
+          version="$(tr -d '[:space:]' < .shellcheck-version)"
+          url="https://github.com/koalaman/shellcheck/releases/download/v${version}/shellcheck-v${version}.linux.x86_64.tar.xz"
+          curl -fsSL "$url" | tar -xJ -C /tmp
+          sudo install -m 0755 "/tmp/shellcheck-v${version}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
 
       - name: Run project checks
         run: |

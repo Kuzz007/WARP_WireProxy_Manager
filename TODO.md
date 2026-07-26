@@ -76,9 +76,13 @@
 - [x] `--purge` и `--remove` не трогают посторонние файлы в `/etc/wireguard`.
 - [x] `.gitattributes` с `eol=lf` против CRLF при коммите с Windows.
 
+- [x] release tags / changelog для версий: `CHANGELOG.md` + теги вида `v1.2.2`.
+- [x] Закреплённая версия shellcheck для CI и локальной проверки.
+  - `.shellcheck-version` — единственный источник версии.
+  - `scripts/check.sh` предупреждает при расхождении с локальной.
+- [x] Лицензия MIT.
+
 ## Возможные следующие задачи
 
 - [ ] автообновление README-команд при изменении версии.
-- [ ] release tags / changelog для версий.
-- [ ] проверка CI после каждого push и исправление shellcheck warning.
 - [ ] OpenRC unit для Alpine без systemd, если понадобится.

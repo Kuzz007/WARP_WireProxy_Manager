@@ -444,6 +444,16 @@ bash -n
 shellcheck --severity=warning
 ```
 
+Версия shellcheck закреплена в `.shellcheck-version` и ставится из релизов koalaman: набор правил заметно меняется между версиями, и версия из apt дрейфовала вместе с образом раннера.
+
+Тот же набор проверок локально:
+
+```bash
+scripts/check.sh
+```
+
+Скрипт печатает свою версию shellcheck рядом с закреплённой и предупреждает при расхождении. Если версии разные, «локально зелено» ещё не значит «в CI зелено».
+
 ---
 
 ## Файлы в репозитории
@@ -454,5 +464,9 @@ warp-wireproxy-native.sh   нативный установщик WARP + wireprox
 install-warp-check.sh      отдельный минимальный установщик cron-проверки
 warp-wireproxy-auto.sh     deprecated-wrapper для обратной совместимости
 TODO.md                    список дальнейших улучшений
+CHANGELOG.md               что менялось от версии к версии
+LICENSE                    MIT
+scripts/check.sh           локальный прогон тех же проверок, что в CI
+.shellcheck-version        версия shellcheck, закреплённая для CI и локали
 .github/workflows/         CI-проверки bash-скриптов
 ```
