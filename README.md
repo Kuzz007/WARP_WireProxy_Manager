@@ -52,8 +52,8 @@ https://github.com/Kuzz007/WARP_WireProxy_Manager
 Текущая версия:
 
 ```text
-warpwp v1.2.1
-warp-wireproxy-native.sh v1.1.4
+warpwp v1.2.2
+warp-wireproxy-native.sh v1.1.5
 ```
 
 ---
@@ -127,13 +127,18 @@ warpwp --fix-routing
 | `warpwp --remove` | Безопасно удалить компоненты менеджера |
 | `warpwp --purge` | Жёстко удалить WARP/wireproxy/wgcf/warp-cli/fscarmen-следы |
 
+И `--remove`, и `--purge` удаляют из `/etc/wireguard` только файлы этого проекта
+(`warp.conf`, `warp.wireproxy.conf`, `proxy.conf`, `warp-account.json`,
+`warp-private.key`, кэши endpoint'ов). Посторонние конфиги вроде `wg0.conf`
+остаются на месте, сам каталог удаляется только если стал пустым.
+
 ---
 
 ## Меню
 
 ```text
 ============================================================
- WARP + wireproxy manager v1.2.1
+ WARP + wireproxy manager v1.2.2
 ============================================================
  1) Установить / обновить WARP + wireproxy + cron
  2) Проверить состояние

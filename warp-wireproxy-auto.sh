@@ -16,8 +16,8 @@ REPO_RAW="https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main"
 NATIVE_URL="$REPO_RAW/warp-wireproxy-native.sh"
 TMP_SCRIPT=""
 
-log()  { printf '\033[1;36m[ИНФО]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[ВНИМАНИЕ]\033[0m %s\n' "$*"; }
+log()  { printf '\033[1;36m[ИНФО]\033[0m %s\n' "$*" >&2; }
+warn() { printf '\033[1;33m[ВНИМАНИЕ]\033[0m %s\n' "$*" >&2; }
 err()  { printf '\033[1;31m[ОШИБКА]\033[0m %s\n' "$*" >&2; }
 
 usage() {

@@ -18,9 +18,9 @@ SCAN_COUNT="25"
 CRON_SCHEDULE="*/10 * * * *"
 LOCK_FILE="/var/lock/warpwp-check.lock"
 
-log()  { printf '\033[1;36m[ИНФО]\033[0m %s\n' "$*"; }
-ok()   { printf '\033[1;32m[ОК]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[ВНИМАНИЕ]\033[0m %s\n' "$*"; }
+log()  { printf '\033[1;36m[ИНФО]\033[0m %s\n' "$*" >&2; }
+ok()   { printf '\033[1;32m[ОК]\033[0m %s\n' "$*" >&2; }
+warn() { printf '\033[1;33m[ВНИМАНИЕ]\033[0m %s\n' "$*" >&2; }
 err()  { printf '\033[1;31m[ОШИБКА]\033[0m %s\n' "$*" >&2; }
 
 usage() {

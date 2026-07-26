@@ -1,0 +1,4 @@
+# Скрипты всегда с LF: CRLF в shebang ломает запуск на Linux-VPS.
+*.sh text eol=lf
+*.yml text eol=lf
+*.md text eol=lf

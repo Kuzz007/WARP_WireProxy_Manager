@@ -4,13 +4,14 @@
 
 set -Eeuo pipefail
 
-VERSION="1.2.1"
+VERSION="1.2.2"
 REPO_RAW="https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main"
 NATIVE_URL="$REPO_RAW/warp-wireproxy-native.sh"
 MANAGER_URL="$REPO_RAW/warpwp.sh"
 
 MANAGER_BIN="/usr/local/bin/warpwp"
 NATIVE_BIN="/usr/local/bin/warp-wireproxy-native.sh"
+WG_DIR="${WG_DIR:-/etc/wireguard}"
 CRON_FILE="/etc/cron.d/warp-wireproxy-check"
 LOG_FILE="/var/log/warp-check.log"
 LOCK_FILE="/var/lock/warpwp-check.lock"
@@ -27,9 +28,11 @@ SOCKS_HOST="127.0.0.1"
 SOCKS_PORT="40000"
 ZAPRET_PORTS="443,2408,1843,1010,500,1701,4500,4443,8443,8095"
 
-log() { printf '\033[1;36m[ИНФО]\033[0m %s\n' "$*"; }
-ok() { printf '\033[1;32m[ОК]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[ВНИМАНИЕ]\033[0m %s\n' "$*"; }
+# Диагностика идёт в stderr: иначе command substitution вокруг функций,
+# которые логируют, затягивает сообщения в возвращаемое значение.
+log() { printf '\033[1;36m[ИНФО]\033[0m %s\n' "$*" >&2; }
+ok() { printf '\033[1;32m[ОК]\033[0m %s\n' "$*" >&2; }
+warn() { printf '\033[1;33m[ВНИМАНИЕ]\033[0m %s\n' "$*" >&2; }
 err() { printf '\033[1;31m[ОШИБКА]\033[0m %s\n' "$*" >&2; }
 need_root() { [[ "${EUID}" -eq 0 ]] || { err "Запусти от root."; exit 1; }; }
 pause() { echo; read -rp "Нажми Enter для продолжения... " _ || true; }
@@ -64,7 +67,16 @@ timer_installed_bool() { [[ -f "$TIMER_SERVICE_FILE" && -f "$TIMER_FILE" ]] && e
 timer_active_bool() { systemctl is-active --quiet warp-wireproxy-check.timer 2>/dev/null && echo 1 || echo 0; }
 timer_enabled_bool() { systemctl is-enabled --quiet warp-wireproxy-check.timer 2>/dev/null && echo 1 || echo 0; }
 get_timer_minutes() { local value=""; if [[ -f "$TIMER_ENV_FILE" ]]; then value="$(grep -E '^TIMER_MINUTES=' "$TIMER_ENV_FILE" 2>/dev/null | tail -n1 | cut -d= -f2- | tr -d '"' || true)"; fi; [[ "$value" =~ ^[0-9]+$ ]] || value="$DEFAULT_TIMER_MINUTES"; echo "$value"; }
-ask_timer_minutes() { local current input; current="$(get_timer_minutes)"; if [[ -t 0 ]]; then read -rp "Интервал проверки в минутах [${current}]: " input || true; input="${input:-$current}"; else input="${1:-$current}"; fi; if ! [[ "$input" =~ ^[0-9]+$ ]] || [[ "$input" -lt 1 ]]; then warn "Некорректный интервал '$input', использую ${DEFAULT_TIMER_MINUTES} минут."; input="$DEFAULT_TIMER_MINUTES"; fi; echo "$input"; }
+ask_timer_minutes() {
+  local arg="${1:-}" current input
+  current="$(get_timer_minutes)"
+  # Явно переданный аргумент всегда важнее промпта: warpwp --install-timer 15
+  if [[ -n "$arg" ]]; then input="$arg"
+  elif [[ -t 0 ]]; then read -rp "Интервал проверки в минутах [${current}]: " input || true; input="${input:-$current}"
+  else input="$current"; fi
+  if ! [[ "$input" =~ ^[0-9]+$ ]] || [[ "$input" -lt 1 ]]; then warn "Некорректный интервал '$input', использую ${DEFAULT_TIMER_MINUTES} минут."; input="$DEFAULT_TIMER_MINUTES"; fi
+  echo "$input"
+}
 
 install_manager() { need_root; need_curl; log "Устанавливаю менеджер в $MANAGER_BIN"; safe_download_exec "$MANAGER_URL" "$MANAGER_BIN"; ok "Готово. Теперь меню запускается командой: warpwp"; }
 update_local_scripts() { need_root; need_curl; log "Обновляю native-скрипт..."; safe_download_exec "$NATIVE_URL" "$NATIVE_BIN"; ok "Обновлён: $NATIVE_BIN"; log "Обновляю менеджер..."; safe_download_exec "$MANAGER_URL" "$MANAGER_BIN"; ok "Обновлён: $MANAGER_BIN"; }
@@ -197,8 +209,18 @@ quick_scan() { run_scan "$QUICK_SCAN_COUNT" "Quick scan"; }
 deep_scan() { run_scan "$DEEP_SCAN_COUNT" "Deep scan"; }
 doctor() { status; }
 show_logs() { echo "--- $LOG_FILE ---"; tail -n 120 "$LOG_FILE" 2>/dev/null || true; echo; echo "--- $TIMER_LOG_FILE ---"; tail -n 80 "$TIMER_LOG_FILE" 2>/dev/null || true; echo; journalctl -u wireproxy -n 80 --no-pager 2>/dev/null || true; }
-remove_safe() { need_root; echo "Это удалит компоненты WARP WireProxy Manager."; read -rp "Продолжить? [y/N]: " ans; case "$ans" in y|Y|yes|YES|да|Да) ;; *) echo "Отменено."; return 0 ;; esac; systemctl stop wireproxy 2>/dev/null || true; systemctl disable wireproxy 2>/dev/null || true; remove_timer_check_quiet; rm -f /etc/systemd/system/wireproxy.service "$CRON_FILE" "$NATIVE_BIN" "$LOG_FILE" "$TIMER_LOG_FILE" "$TIMER_ENV_FILE"; rm -f /etc/wireguard/warp.conf /etc/wireguard/warp.wireproxy.conf /etc/wireguard/proxy.conf /etc/wireguard/warp-account.json /etc/wireguard/warp-private.key; rmdir /etc/wireguard 2>/dev/null || true; systemctl daemon-reload; systemctl reset-failed; ok "Удаление завершено. Команда warpwp оставлена."; }
-purge_all() { need_root; echo "Это жёстко удалит WARP/wireproxy/cron/timer/wgcf/warp-cli/fscarmen-следы."; read -rp "Продолжить PURGE? [y/N]: " ans; case "$ans" in y|Y|yes|YES|да|Да) ;; *) echo "Отменено."; return 0 ;; esac; remove_timer_check_quiet; fix_routing --quiet; systemctl stop wireproxy warp-svc wg-quick@warp wg-quick@wgcf 2>/dev/null || true; systemctl disable wireproxy warp-svc wg-quick@warp wg-quick@wgcf 2>/dev/null || true; pkill -f wireproxy 2>/dev/null || true; pkill -f warp-svc 2>/dev/null || true; pkill -f warp-cli 2>/dev/null || true; pkill -f wgcf 2>/dev/null || true; rm -f /etc/systemd/system/wireproxy.service /etc/systemd/system/warp-svc.service /usr/lib/systemd/system/wireproxy.service /usr/lib/systemd/system/warp-svc.service /lib/systemd/system/wireproxy.service /lib/systemd/system/warp-svc.service; rm -f /usr/bin/wireproxy /usr/local/bin/wireproxy /opt/bin/wireproxy /usr/bin/warp-cli /usr/local/bin/warp-cli /usr/bin/warp-svc /usr/local/bin/warp-svc /usr/bin/wgcf /usr/local/bin/wgcf; rm -rf /etc/wireguard /root/warp-wireproxy-backup /root/warp-wireproxy-native-backup; rm -f /root/menu.sh /root/warp-wireproxy-auto.sh /root/warp-wireproxy-native.sh "$CRON_FILE" "$NATIVE_BIN" "$LOG_FILE" "$TIMER_LOG_FILE" "$TIMER_ENV_FILE"; systemctl daemon-reload; systemctl reset-failed; ok "PURGE завершён. Команда warpwp оставлена."; }
+# Файлы в /etc/wireguard, созданные этим проектом. Всё остальное в каталоге
+# принадлежит пользователю: чужие wg0.conf и т.п. не трогаем никогда.
+WG_OWNED_FILES=(warp.conf warp.wireproxy.conf proxy.conf warp-account.json warp-private.key warp-endpoints.good warp-endpoints.bad warp-endpoints.good.tmp warp-endpoints.bad.tmp)
+remove_project_wg_files() {
+  local f
+  for f in "${WG_OWNED_FILES[@]}"; do rm -f "$WG_DIR/$f"; done
+  rmdir "$WG_DIR" 2>/dev/null && return 0
+  if [[ -d "$WG_DIR" ]]; then warn "$WG_DIR оставлен: там есть посторонние файлы."; ls -1A "$WG_DIR" >&2 2>/dev/null || true; fi
+  return 0
+}
+remove_safe() { need_root; echo "Это удалит компоненты WARP WireProxy Manager."; read -rp "Продолжить? [y/N]: " ans; case "$ans" in y|Y|yes|YES|да|Да) ;; *) echo "Отменено."; return 0 ;; esac; systemctl stop wireproxy 2>/dev/null || true; systemctl disable wireproxy 2>/dev/null || true; remove_timer_check_quiet; rm -f /etc/systemd/system/wireproxy.service "$CRON_FILE" "$NATIVE_BIN" "$LOG_FILE" "$TIMER_LOG_FILE" "$TIMER_ENV_FILE"; remove_project_wg_files; systemctl daemon-reload; systemctl reset-failed; ok "Удаление завершено. Команда warpwp оставлена."; }
+purge_all() { need_root; echo "Это жёстко удалит WARP/wireproxy/cron/timer/wgcf/warp-cli/fscarmen-следы."; read -rp "Продолжить PURGE? [y/N]: " ans; case "$ans" in y|Y|yes|YES|да|Да) ;; *) echo "Отменено."; return 0 ;; esac; remove_timer_check_quiet; fix_routing --quiet; systemctl stop wireproxy warp-svc wg-quick@warp wg-quick@wgcf 2>/dev/null || true; systemctl disable wireproxy warp-svc wg-quick@warp wg-quick@wgcf 2>/dev/null || true; pkill -f wireproxy 2>/dev/null || true; pkill -f warp-svc 2>/dev/null || true; pkill -f warp-cli 2>/dev/null || true; pkill -f wgcf 2>/dev/null || true; rm -f /etc/systemd/system/wireproxy.service /etc/systemd/system/warp-svc.service /usr/lib/systemd/system/wireproxy.service /usr/lib/systemd/system/warp-svc.service /lib/systemd/system/wireproxy.service /lib/systemd/system/warp-svc.service; rm -f /usr/bin/wireproxy /usr/local/bin/wireproxy /opt/bin/wireproxy /usr/bin/warp-cli /usr/local/bin/warp-cli /usr/bin/warp-svc /usr/local/bin/warp-svc /usr/bin/wgcf /usr/local/bin/wgcf; remove_project_wg_files; rm -rf /root/warp-wireproxy-backup /root/warp-wireproxy-native-backup; rm -f /root/menu.sh /root/warp-wireproxy-auto.sh /root/warp-wireproxy-native.sh "$CRON_FILE" "$NATIVE_BIN" "$LOG_FILE" "$TIMER_LOG_FILE" "$TIMER_ENV_FILE"; systemctl daemon-reload; systemctl reset-failed; ok "PURGE завершён. Команда warpwp оставлена."; }
 
 wg_emit_json() {
   local source_file="$1" line section key value private_key mtu public_key endpoint keepalive preshared_key workers no_kernel_tun item i total
