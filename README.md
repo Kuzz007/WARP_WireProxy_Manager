@@ -52,8 +52,8 @@ https://github.com/Kuzz007/WARP_WireProxy_Manager
 Текущая версия:
 
 ```text
-warpwp v1.2.2
-warp-wireproxy-native.sh v1.1.6
+warpwp v1.3.0
+warp-wireproxy-native.sh v1.2.0
 ```
 
 ---
@@ -115,6 +115,12 @@ warpwp --fix-routing
 | `warpwp --check` | Обычный ремонт endpoint, `scan-count=25` |
 | `warpwp --quick-scan` | Быстрый ремонт endpoint, `scan-count=15` |
 | `warpwp --deep-scan` | Глубокий ремонт endpoint, `scan-count=150` |
+| `warpwp --warpscout-scan` | Независимый deep scan через установленный WARPSCOUT |
+| `warpwp --check --scanner auto` | Сначала WARPSCOUT, при неудаче встроенный scanner |
+| `warpwp --check --node HEL,ARN` | Выбирать только указанные Cloudflare colo |
+| `warpwp --check --avoid-node DME` | Исключить указанные Cloudflare colo |
+| `warpwp --check --country DE,NL` | Выбирать указанные выходные страны (`loc`) |
+| `warpwp --check --avoid-country RU` | Исключить указанные выходные страны (`loc`) |
 | `warpwp --xray` | Показать блоки для 3x-ui/Xray |
 | `warpwp --zapret` | Показать строки для zapret4rocket |
 | `warpwp --wg-paste` | Вставить WireGuard `.conf` в терминал и получить JSON |
@@ -138,7 +144,7 @@ warpwp --fix-routing
 
 ```text
 ============================================================
- WARP + wireproxy manager v1.2.2
+ WARP + wireproxy manager v1.3.0
 ============================================================
  1) Установить / обновить WARP + wireproxy + cron
  2) Проверить состояние
@@ -185,7 +191,7 @@ warp-wireproxy-native.sh --check --scan-count 25
 
 Пересканирование запускается только когда быстрая проверка не увидела `warp=on`, то есть когда туннель уже лежит. Поэтому здесь важно время восстановления.
 
-Перебор останавливается, как только набрано 3 рабочих endpoint'а, и лучший выбирается из них по времени ответа. Раньше проверялись все кандидаты подряд, и `--deep-scan` прогонял 150 полных проверок даже если рабочий нашёлся на первой.
+Перебор останавливается, как только набрано 3 стабильных endpoint'а, соответствующих policy. Новый endpoint проверяется серией из 5 запросов: допускается одна случайная потеря, но две финальные ошибки подряд считаются teardown. Лучший выбирается по доле неудачных HTTP-проб, затем по среднему времени ответа. Это не ICMP packet loss: метрика показывает стабильность реального трафика через `wireproxy`. Раньше проверялись все кандидаты подряд, и `--deep-scan` прогонял 150 полных проверок даже если рабочий нашёлся на первой.
 
 Сколько рабочих набирать, можно задать:
 
@@ -196,6 +202,50 @@ warp-wireproxy-native.sh --check --scan-count 150 --enough-good 1
 Первыми всегда проверяются текущий endpoint и кэш `warp-endpoints.good`, отсортированный по времени ответа, поэтому обычное восстановление укладывается в несколько попыток. Полный проход всех кандидатов остаётся только для случая, когда не работает вообще ничего.
 
 Если рабочий endpoint не нашёлся, в `proxy.conf` возвращается тот, что стоял до сканирования. Раньше там оставался последний проверенный случайный адрес.
+
+### Policy по Cloudflare node и выходной стране
+
+`colo` из Cloudflare trace — код edge-узла, а `loc` — страна, которую видят внешние сайты. Это разные параметры:
+
+```bash
+# Разрешить HEL или ARN, но исключить российский выходной регион
+warpwp --check --node HEL,ARN --avoid-country RU
+
+# Исключить DME и предпочитать выход через DE/NL
+warpwp --deep-scan --avoid-node DME --country DE,NL
+```
+
+По умолчанию используется `--policy-mode prefer`: если подходящий endpoint не найден, Manager может взять любой стабильный рабочий. Для жёсткого запрета:
+
+```bash
+warpwp --check --avoid-node DME --policy-mode strict
+```
+
+Доступные параметры native-скрипта: `--node`, `--avoid-node`, `--country`, `--avoid-country`, `--policy-mode prefer|strict` и `--stability-probes N`.
+
+### WARPSCOUT как независимый scanner
+
+Если бинарник `warpscout` уже установлен, Manager может искать endpoint в отдельных userspace-туннелях, не переписывая боевой `proxy.conf` на каждом кандидате:
+
+```bash
+warpwp --warpscout-scan
+warpwp --deep-scan --scanner auto --avoid-node DME
+```
+
+- `--scanner warpscout` требует WARPSCOUT и завершится ошибкой, если тот не нашёл endpoint.
+- `--scanner auto` сначала пробует WARPSCOUT, затем возвращается к встроенному scanner.
+- Временный WARPSCOUT account собирается из существующих `warp-account.json` и `warp-private.key`, содержит только tunnel keys без API token/id, имеет права `0600` и удаляется после запуска.
+- Найденный endpoint всё равно проверяется через реальный `wireproxy` перед сохранением.
+- Manager передаёт WARPSCOUT только положительный `--node`: параметр `-country` у WARPSCOUT означает страну расположения узла, а у Manager `--country` — выходной `loc`. Country/deny-policy проверяется финальным trace; в `--scanner auto` несовпадение передаётся native scanner.
+- Сейчас интеграция использует только `-p wg`: AmneziaWG и MASQUE требуют другого SOCKS backend и в `wireproxy` не подставляются.
+
+Путь и параллелизм можно переопределить:
+
+```bash
+warpwp --deep-scan --scanner warpscout \
+  --warpscout-bin /usr/local/bin/warpscout \
+  --warpscout-jobs 6
+```
 
 ---
 
@@ -328,6 +378,7 @@ scheduler
 service
 socks5
 warp
+selection (time_total, probe_loss_percent, stable, scanner, checked_at)
 routing_guard
 cron
 timer
@@ -442,6 +493,7 @@ Workflow:
 ```text
 bash -n
 shellcheck --severity=warning
+scripts/test-native.sh
 ```
 
 Версия shellcheck закреплена в `.shellcheck-version` и ставится из релизов koalaman: набор правил заметно меняется между версиями, и версия из apt дрейфовала вместе с образом раннера.

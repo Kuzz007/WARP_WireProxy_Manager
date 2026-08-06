@@ -4,7 +4,7 @@
 
 set -Eeuo pipefail
 
-VERSION="1.2.2"
+VERSION="1.3.0"
 REPO_RAW="https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main"
 NATIVE_URL="$REPO_RAW/warp-wireproxy-native.sh"
 MANAGER_URL="$REPO_RAW/warpwp.sh"
@@ -180,8 +180,12 @@ status() {
   echo; scheduler_status; echo; routing_guard_status; echo; print_memo_short
 }
 status_json() {
-  local ep ep_port native_ver service_state service_active socks_listening cron_installed cron_flock log_exists manager_installed native_installed trace ip colo loc warp installed healthy timer_installed timer_active timer_enabled timer_minutes timer_log_exists scheduler routing_danger
+  local ep ep_port native_ver service_state service_active socks_listening cron_installed cron_flock log_exists manager_installed native_installed trace ip colo loc warp installed healthy timer_installed timer_active timer_enabled timer_minutes timer_log_exists scheduler routing_danger cache_line cache_time cache_colo cache_loc cache_checked_at cache_loss cache_stable cache_scanner _cache_ep
   ep="$(current_endpoint)"; ep_port="$(current_endpoint_port)"; native_ver="$(native_version)"; service_state="$(systemctl is-active wireproxy 2>/dev/null || true)"; [[ "$service_state" == "active" ]] && service_active="1" || service_active="0"; ss -lntup 2>/dev/null | grep -q ":$SOCKS_PORT" && socks_listening="1" || socks_listening="0"; cron_installed="$(cron_installed_bool)"; cron_flock="$(cron_flock_bool)"; [[ -f "$LOG_FILE" ]] && log_exists="1" || log_exists="0"; [[ -x "$MANAGER_BIN" ]] && manager_installed="1" || manager_installed="0"; [[ -x "$NATIVE_BIN" ]] && native_installed="1" || native_installed="0"; [[ -f /etc/wireguard/proxy.conf ]] && installed="1" || installed="0"; timer_installed="$(timer_installed_bool)"; timer_active="$(timer_active_bool)"; timer_enabled="$(timer_enabled_bool)"; timer_minutes="$(get_timer_minutes)"; [[ -f "$TIMER_LOG_FILE" ]] && timer_log_exists="1" || timer_log_exists="0"; scheduler="$(scheduler_name)"; trace="$(curl -m 10 -s -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null || true)"; ip="$(echo "$trace" | awk -F= '$1=="ip"{print $2; exit}')"; colo="$(echo "$trace" | awk -F= '$1=="colo"{print $2; exit}')"; loc="$(echo "$trace" | awk -F= '$1=="loc"{print $2; exit}')"; warp="$(echo "$trace" | awk -F= '$1=="warp"{print $2; exit}')"; routing_danger="0"; routing_danger_bool && routing_danger="1" || true; [[ "$installed" == "1" && "$service_active" == "1" && "$socks_listening" == "1" && "$warp" == "on" && "$scheduler" != "none" && "$routing_danger" == "0" ]] && healthy="1" || healthy="0"
+  cache_line="$(awk -v ep="$ep" -F'\t' '$1==ep{line=$0} END{print line}' "$WG_DIR/warp-endpoints.good" 2>/dev/null || true)"
+  IFS=$'\t' read -r _cache_ep cache_time cache_colo cache_loc cache_checked_at cache_loss cache_stable cache_scanner <<< "$cache_line"
+  cache_time="${cache_time:-}"; cache_colo="${cache_colo:-}"; cache_loc="${cache_loc:-}"; cache_checked_at="${cache_checked_at:-0}"; cache_loss="${cache_loss:-}"; cache_stable="${cache_stable:-}"; cache_scanner="${cache_scanner:-legacy}"
+  [[ "$cache_checked_at" =~ ^[0-9]+$ ]] || cache_checked_at="0"
   cat <<EOF_JSON
 {
   "manager_version": "$(json_escape "$VERSION")",
@@ -194,6 +198,7 @@ status_json() {
   "service": {"name": "wireproxy", "state": "$(json_escape "$service_state")", "active": $(json_bool "$service_active")},
   "socks5": {"host": "$(json_escape "$SOCKS_HOST")", "port": $SOCKS_PORT, "listening": $(json_bool "$socks_listening")},
   "warp": {"endpoint": "$(json_escape "$ep")", "endpoint_port": "$(json_escape "$ep_port")", "ip": "$(json_escape "$ip")", "colo": "$(json_escape "$colo")", "loc": "$(json_escape "$loc")", "status": "$(json_escape "$warp")", "on": $( [[ "$warp" == "on" ]] && printf 'true' || printf 'false' )},
+  "selection": {"time_total": "$(json_escape "$cache_time")", "colo": "$(json_escape "$cache_colo")", "loc": "$(json_escape "$cache_loc")", "checked_at": $cache_checked_at, "probe_loss_percent": "$(json_escape "$cache_loss")", "stable": "$(json_escape "$cache_stable")", "scanner": "$(json_escape "$cache_scanner")"},
   "routing_guard": {"danger": $(json_bool "$routing_danger")},
   "cron": {"file": "$(json_escape "$CRON_FILE")", "installed": $(json_bool "$cron_installed"), "uses_flock": $(json_bool "$cron_flock"), "lock_file": "$(json_escape "$LOCK_FILE")", "schedule": "$(json_escape "$DEFAULT_SCHEDULE")"},
   "timer": {"service_file": "$(json_escape "$TIMER_SERVICE_FILE")", "timer_file": "$(json_escape "$TIMER_FILE")", "installed": $(json_bool "$timer_installed"), "enabled": $(json_bool "$timer_enabled"), "active": $(json_bool "$timer_active"), "interval_minutes": $timer_minutes, "log_file": "$(json_escape "$TIMER_LOG_FILE")", "log_exists": $(json_bool "$timer_log_exists")},
@@ -203,10 +208,24 @@ status_json() {
 EOF_JSON
 }
 
-run_scan() { local count="$1" label="$2"; need_root; [[ -x "$NATIVE_BIN" ]] || update_local_scripts; ensure_flock; fix_routing --quiet; log "$label: запускаю проверку/ремонт WARP с scan-count=$count"; if command -v flock >/dev/null 2>&1; then flock -n "$LOCK_FILE" "$NATIVE_BIN" --check --scan-count "$count" || warn "Другая проверка уже выполняется или scan завершился с ошибкой."; else "$NATIVE_BIN" --check --scan-count "$count"; fi; }
-repair_endpoint() { run_scan "$DEFAULT_SCAN_COUNT" "Обычный scan"; }
-quick_scan() { run_scan "$QUICK_SCAN_COUNT" "Quick scan"; }
-deep_scan() { run_scan "$DEEP_SCAN_COUNT" "Deep scan"; }
+run_scan() {
+  local count="$1" label="$2"; shift 2
+  local -a extra=("$@")
+  need_root
+  [[ -x "$NATIVE_BIN" ]] || update_local_scripts
+  ensure_flock
+  fix_routing --quiet
+  log "$label: запускаю проверку/ремонт WARP с scan-count=$count ${extra[*]}"
+  if command -v flock >/dev/null 2>&1; then
+    flock -n "$LOCK_FILE" "$NATIVE_BIN" --check --scan-count "$count" "${extra[@]}" || warn "Другая проверка уже выполняется или scan завершился с ошибкой."
+  else
+    "$NATIVE_BIN" --check --scan-count "$count" "${extra[@]}"
+  fi
+}
+repair_endpoint() { run_scan "$DEFAULT_SCAN_COUNT" "Обычный scan" "$@"; }
+quick_scan() { run_scan "$QUICK_SCAN_COUNT" "Quick scan" "$@"; }
+deep_scan() { run_scan "$DEEP_SCAN_COUNT" "Deep scan" "$@"; }
+warpscout_scan() { run_scan "$DEEP_SCAN_COUNT" "WARPSCOUT deep scan" --scanner warpscout "$@"; }
 doctor() { status; }
 show_logs() { echo "--- $LOG_FILE ---"; tail -n 120 "$LOG_FILE" 2>/dev/null || true; echo; echo "--- $TIMER_LOG_FILE ---"; tail -n 80 "$TIMER_LOG_FILE" 2>/dev/null || true; echo; journalctl -u wireproxy -n 80 --no-pager 2>/dev/null || true; }
 # Файлы в /etc/wireguard, созданные этим проектом. Всё остальное в каталоге
@@ -281,6 +300,9 @@ warpwp --fix-routing      # убрать опасный системный WARP 
 warpwp --check            # scan-count=$DEFAULT_SCAN_COUNT
 warpwp --quick-scan       # scan-count=$QUICK_SCAN_COUNT
 warpwp --deep-scan        # scan-count=$DEEP_SCAN_COUNT
+warpwp --warpscout-scan   # независимый deep scan через WARPSCOUT
+warpwp --check --avoid-node DME --country DE,NL
+warpwp --deep-scan --scanner auto --stability-probes 7
 warpwp --xray             # блоки для 3x-ui/Xray
 warpwp --zapret           # строки для zapret4rocket
 warpwp --wg-paste         # вставить WireGuard .conf и получить JSON для 3x-ui
@@ -332,9 +354,10 @@ case "${1:-}" in
   --status-json|--json) status_json ;;
   --doctor) doctor ;;
   --fix-routing|--routing-fix) fix_routing ;;
-  --check|--repair) repair_endpoint ;;
-  --quick-scan|--quick) quick_scan ;;
-  --deep-scan|--deep) deep_scan ;;
+  --check|--repair) shift; repair_endpoint "$@" ;;
+  --quick-scan|--quick) shift; quick_scan "$@" ;;
+  --deep-scan|--deep) shift; deep_scan "$@" ;;
+  --warpscout-scan) shift; warpscout_scan "$@" ;;
   --logs) show_logs ;;
   --xray) print_xray ;;
   --zapret) print_zapret ;;
