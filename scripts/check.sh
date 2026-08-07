@@ -37,4 +37,8 @@ else
 fi
 
 echo
+echo "== Unit tests =="
+bash scripts/test-native.sh
+
+echo
 printf '[OK] checks completed\n'

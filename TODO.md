@@ -76,11 +76,22 @@
 - [x] `--purge` и `--remove` не трогают посторонние файлы в `/etc/wireguard`.
 - [x] `.gitattributes` с `eol=lf` против CRLF при коммите с Windows.
 
-- [x] release tags / changelog для версий: `CHANGELOG.md` + теги вида `v1.2.2`.
+- [x] release tags / changelog для версий: `CHANGELOG.md` + теги вида `v1.3.0`.
 - [x] Закреплённая версия shellcheck для CI и локальной проверки.
   - `.shellcheck-version` — единственный источник версии.
   - `scripts/check.sh` предупреждает при расхождении с локальной.
 - [x] Лицензия MIT.
+
+- [x] Policy выбора endpoint по Cloudflare `colo` и выходной стране.
+  - `--node`, `--avoid-node`, `--country`, `--avoid-country`.
+  - Режимы `--policy-mode prefer|strict`.
+- [x] Stability-check новых endpoint'ов.
+  - Серия запросов, probe loss и обнаружение финального teardown.
+  - Метрики сохраняются в good-cache и выводятся в `--status-json`.
+- [x] Опциональный WARPSCOUT scanner.
+  - `--scanner native|warpscout|auto` и `warpwp --warpscout-scan`.
+  - Временный account строится из существующих ключей и удаляется после scan.
+  - Endpoint применяется только после финальной проверки через `wireproxy`.
 
 ## Возможные следующие задачи
 

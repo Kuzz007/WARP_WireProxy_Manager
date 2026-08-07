@@ -3,6 +3,28 @@
 Версии `warpwp` и `warp-wireproxy-native.sh` нумеруются раздельно, теги
 репозитория идут по версии менеджера.
 
+## v1.3.0 — warpwp 1.3.0, warp-wireproxy-native.sh 1.2.0
+
+### Добавлено
+
+- Policy выбора endpoint по Cloudflare colo и выходной стране:
+  `--node`, `--avoid-node`, `--country`, `--avoid-country` и
+  `--policy-mode prefer|strict`.
+- Проверка стабильности нового endpoint серией запросов. В good-cache теперь
+  сохраняются probe loss, stable-флаг и scanner; поля остаются совместимыми со старым
+  пятиколоночным форматом.
+- Опциональный WARPSCOUT scanner: `--scanner native|warpscout|auto` и команда
+  `warpwp --warpscout-scan`. Временный account строится из существующего WARP
+  account, а найденный endpoint повторно проверяется через `wireproxy`.
+- Объект `selection` в `warpwp --status-json` с метриками последнего выбора.
+
+### Изменено
+
+- Native scanner ранжирует стабильные endpoint'ы сначала по probe loss, затем по
+  среднему `time_total`.
+- Аргументы после `warpwp --check`, `--quick-scan` и `--deep-scan` передаются в
+  native-скрипт, поэтому policy и scanner можно выбирать из основного CLI.
+
 ## v1.2.2 — warpwp 1.2.2, warp-wireproxy-native.sh 1.1.6
 
 ### Исправлено
