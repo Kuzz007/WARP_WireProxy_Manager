@@ -8,7 +8,7 @@
 
 set -Eeuo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main"
+REPO_RAW="https://raw.githubusercontent.com/kuzzrus/WARP_WireProxy_Manager/main"
 SCRIPT_URL="$REPO_RAW/warp-wireproxy-native.sh"
 SELF_URL="$REPO_RAW/install-warp-check.sh"
 LOCAL_SCRIPT="/usr/local/bin/warp-wireproxy-native.sh"

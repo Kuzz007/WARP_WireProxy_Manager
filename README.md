@@ -46,13 +46,13 @@ ip route get <твой-admin-ip>
 Репозиторий:
 
 ```text
-https://github.com/Kuzz007/WARP_WireProxy_Manager
+https://github.com/kuzzrus/WARP_WireProxy_Manager
 ```
 
 Текущая версия:
 
 ```text
-warpwp v1.3.1
+warpwp v1.3.2
 warp-wireproxy-native.sh v1.2.1
 ```
 
@@ -63,7 +63,7 @@ warp-wireproxy-native.sh v1.2.1
 Установить менеджер:
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warpwp.sh?nocache=$(date +%s)") --install-manager
+bash <(curl -fsSL "https://raw.githubusercontent.com/kuzzrus/WARP_WireProxy_Manager/main/warpwp.sh?nocache=$(date +%s)") --install-manager
 ```
 
 Если raw-кэш GitHub отдаёт старую версию, поставить через GitHub API:
@@ -71,7 +71,7 @@ bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Mana
 ```bash
 curl -fsSL \
   -H "Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/Kuzz007/WARP_WireProxy_Manager/contents/warpwp.sh?ref=main" \
+  "https://api.github.com/repos/kuzzrus/WARP_WireProxy_Manager/contents/warpwp.sh?ref=main" \
   -o /usr/local/bin/warpwp
 
 chmod +x /usr/local/bin/warpwp
@@ -144,7 +144,7 @@ warpwp --fix-routing
 
 ```text
 ============================================================
- WARP + wireproxy manager v1.3.1
+ WARP + wireproxy manager v1.3.2
 ============================================================
  1) Установить / обновить WARP + wireproxy + cron
  2) Проверить состояние
@@ -463,7 +463,7 @@ warpwp --update
 ```bash
 curl -fsSL \
   -H "Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/Kuzz007/WARP_WireProxy_Manager/contents/warpwp.sh?ref=main" \
+  "https://api.github.com/repos/kuzzrus/WARP_WireProxy_Manager/contents/warpwp.sh?ref=main" \
   -o /usr/local/bin/warpwp
 
 chmod +x /usr/local/bin/warpwp

@@ -4,8 +4,8 @@
 
 set -Eeuo pipefail
 
-VERSION="1.3.1"
-REPO_RAW="https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main"
+VERSION="1.3.2"
+REPO_RAW="https://raw.githubusercontent.com/kuzzrus/WARP_WireProxy_Manager/main"
 NATIVE_URL="$REPO_RAW/warp-wireproxy-native.sh"
 MANAGER_URL="$REPO_RAW/warpwp.sh"
 
@@ -80,6 +80,7 @@ ask_timer_minutes() {
 
 install_manager() { need_root; need_curl; log "Устанавливаю менеджер в $MANAGER_BIN"; safe_download_exec "$MANAGER_URL" "$MANAGER_BIN"; ok "Готово. Теперь меню запускается командой: warpwp"; }
 update_local_scripts() { need_root; need_curl; log "Обновляю native-скрипт..."; safe_download_exec "$NATIVE_URL" "$NATIVE_BIN"; ok "Обновлён: $NATIVE_BIN"; log "Обновляю менеджер..."; safe_download_exec "$MANAGER_URL" "$MANAGER_BIN"; ok "Обновлён: $MANAGER_BIN"; }
+restart_updated_manager() { [[ -x "$MANAGER_BIN" ]] || { err "Не найден обновлённый менеджер: $MANAGER_BIN"; return 1; }; log "Перезапускаю менеджер из обновлённого файла..."; exec "$MANAGER_BIN"; }
 remove_cron_check() { rm -f "$CRON_FILE"; systemctl restart cron 2>/dev/null || systemctl restart crond 2>/dev/null || true; }
 remove_timer_check_quiet() { systemctl disable --now warp-wireproxy-check.timer 2>/dev/null || true; rm -f "$TIMER_SERVICE_FILE" "$TIMER_FILE"; systemctl daemon-reload 2>/dev/null || true; systemctl reset-failed 2>/dev/null || true; }
 
@@ -339,7 +340,7 @@ menu() { while true; do clear || true; echo "WARP + wireproxy manager v$VERSION"
 23) Fix routing / убрать системный WARP full-tunnel
 0) Выход
 EOF_MENU
-read -rp "Выбери пункт: " choice; case "$choice" in 1) install_or_update_all; pause ;; 2) status; pause ;; 3) repair_endpoint; pause ;; 4) update_local_scripts; pause ;; 5) remove_safe; pause ;; 6) show_logs; pause ;; 7) print_commands; pause ;; 8) print_memo_full; pause ;; 9) doctor; pause ;; 10) purge_all; pause ;; 11) install_cron_check; pause ;; 12) print_xray; pause ;; 13) print_zapret; pause ;; 14) quick_scan; pause ;; 15) deep_scan; pause ;; 16) status_json; pause ;; 17) install_timer_check; pause ;; 18) timer_status; pause ;; 19) remove_timer_check; pause ;; 20) scheduler_status; pause ;; 21) wg_paste_to_json; pause ;; 22) wg_conf_to_json; pause ;; 23) fix_routing; pause ;; 0) exit 0 ;; *) echo "Неверный пункт"; sleep 1 ;; esac; done; }
+read -rp "Выбери пункт: " choice; case "$choice" in 1) install_or_update_all; pause ;; 2) status; pause ;; 3) repair_endpoint; pause ;; 4) update_local_scripts; restart_updated_manager ;; 5) remove_safe; pause ;; 6) show_logs; pause ;; 7) print_commands; pause ;; 8) print_memo_full; pause ;; 9) doctor; pause ;; 10) purge_all; pause ;; 11) install_cron_check; pause ;; 12) print_xray; pause ;; 13) print_zapret; pause ;; 14) quick_scan; pause ;; 15) deep_scan; pause ;; 16) status_json; pause ;; 17) install_timer_check; pause ;; 18) timer_status; pause ;; 19) remove_timer_check; pause ;; 20) scheduler_status; pause ;; 21) wg_paste_to_json; pause ;; 22) wg_conf_to_json; pause ;; 23) fix_routing; pause ;; 0) exit 0 ;; *) echo "Неверный пункт"; sleep 1 ;; esac; done; }
 
 case "${1:-}" in
   --install-manager) install_manager ;;
