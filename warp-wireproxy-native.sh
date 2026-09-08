@@ -5,7 +5,7 @@
 
 set -Eeuo pipefail
 
-VERSION="1.2.0"
+VERSION="1.2.1"
 SOCKS_HOST="127.0.0.1"
 SOCKS_PORT="40000"
 SCAN_COUNT="50"
@@ -433,9 +433,18 @@ EOF_SERVICE
 ensure_service_exists() { [[ -f "$SERVICE_FILE" ]] || systemctl list-unit-files 2>/dev/null | grep -q '^wireproxy\.service' && return 0; find_wireproxy_bin >/dev/null 2>&1 && [[ -f "$PROXY_CONF" ]] && { create_service; return 0; }; return 1; }
 # wireproxy занимает порт за доли секунды. Опрос вместо фиксированного
 # sleep 2 экономит почти всё время перебора кандидатов.
-wait_for_socks_port() { local i; for ((i = 0; i < PORT_WAIT_TRIES; i++)); do if ss -lnt 2>/dev/null | grep -q "$SOCKS_HOST:$SOCKS_PORT"; then return 0; fi; sleep 0.1; done; return 1; }
+socks_port_listening() { ss -lnt 2>/dev/null | grep -q "$SOCKS_HOST:$SOCKS_PORT"; }
+wait_for_socks_port() { local i; for ((i = 0; i < PORT_WAIT_TRIES; i++)); do if socks_port_listening; then return 0; fi; sleep 0.1; done; return 1; }
 restart_wireproxy() { ensure_service_exists || { err "wireproxy.service отсутствует, а $PROXY_CONF или бинарник wireproxy не найден."; exit 1; }; systemctl restart wireproxy; wait_for_socks_port || sleep 2; }
-check_port() { ss -lntup 2>/dev/null | grep -q "$SOCKS_HOST:$SOCKS_PORT" && ok "SOCKS5 слушает $SOCKS_HOST:$SOCKS_PORT" || { warn "SOCKS5 порт пока не виден. Статус wireproxy:"; systemctl status wireproxy --no-pager -l | head -80 || true; }; }
+check_port() { socks_port_listening && ok "SOCKS5 слушает $SOCKS_HOST:$SOCKS_PORT" || { warn "SOCKS5 порт пока не виден. Статус wireproxy:"; systemctl status wireproxy --no-pager -l | head -80 || true; }; }
+ensure_wireproxy_ready_for_check() {
+  if systemctl is-active --quiet wireproxy && socks_port_listening; then
+    log "wireproxy уже активен, перезапуск для проверки не требуется."
+    return 0
+  fi
+  warn "wireproxy неактивен или SOCKS5-порт не слушает; перезапускаю сервис."
+  restart_wireproxy
+}
 get_current_endpoint() { grep -i '^Endpoint' "$PROXY_CONF" 2>/dev/null | head -n1 | awk -F= '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}'; }
 
 quick_warp_check() {
@@ -704,7 +713,7 @@ select_best_endpoint() {
 }
 final_check() { BEST_TRACE="$(curl -m "$FINAL_TIMEOUT" -s -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" "$TEST_URL" | grep -E 'ip=|colo=|loc=|warp=' || true)"; echo "$BEST_TRACE"; echo "$BEST_TRACE" | grep -q '^warp=on' || { err "Финальная проверка не показала warp=on."; systemctl status wireproxy --no-pager -l | head -80 || true; exit 1; }; ok "WARP работает: warp=on"; }
 
-run_check_and_repair() { cleanup_system_warp_routes; log "Режим проверки: проверяю текущий WARP без переустановки и без apt update."; [[ -f "$PROXY_CONF" ]] || { err "Не найден $PROXY_CONF. Сначала запусти обычную установку без --check."; exit 1; }; find_wireproxy_bin >/dev/null 2>&1 || { err "wireproxy не найден. Сначала запусти обычную установку без --check."; exit 1; }; ensure_service_exists || create_service; systemctl restart wireproxy || true; sleep 2; check_port; if quick_warp_check; then ok "WARP живой, endpoint менять не нужно."; echo "$BEST_TRACE"; echo; echo "Текущий endpoint: $(get_current_endpoint)"; echo "Кэш good endpoint'ов: $GOOD_ENDPOINTS_FILE"; exit 0; fi; warn "WARP не отвечает или нет warp=on. Запускаю быстрый перескан endpoint'ов..."; backup_existing; select_best_endpoint; final_check; echo; ok "Endpoint был автоматически заменён на рабочий: $BEST_ENDPOINT"; print_result; }
+run_check_and_repair() { cleanup_system_warp_routes; log "Режим проверки: проверяю текущий WARP без переустановки и без apt update."; [[ -f "$PROXY_CONF" ]] || { err "Не найден $PROXY_CONF. Сначала запусти обычную установку без --check."; exit 1; }; find_wireproxy_bin >/dev/null 2>&1 || { err "wireproxy не найден. Сначала запусти обычную установку без --check."; exit 1; }; ensure_service_exists || create_service; ensure_wireproxy_ready_for_check; check_port; if quick_warp_check; then ok "WARP живой, endpoint менять не нужно."; echo "$BEST_TRACE"; echo; echo "Текущий endpoint: $(get_current_endpoint)"; echo "Кэш good endpoint'ов: $GOOD_ENDPOINTS_FILE"; exit 0; fi; warn "WARP не отвечает или нет warp=on. Запускаю быстрый перескан endpoint'ов..."; backup_existing; select_best_endpoint; final_check; echo; ok "Endpoint был автоматически заменён на рабочий: $BEST_ENDPOINT"; print_result; }
 
 print_result() { local endpoint_port; endpoint_port="${BEST_ENDPOINT##*:}"; cat <<EOF_RESULT
 

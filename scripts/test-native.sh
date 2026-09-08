@@ -29,6 +29,25 @@ NODE_ALLOW=""; NODE_DENY="DME"; COUNTRY_ALLOW=""; COUNTRY_DENY=""
 expect_false "node denylist" endpoint_matches_policy DME DE
 expect_true "node denylist fallback" endpoint_matches_policy HEL RU
 
+# The scheduler must not disconnect active SOCKS clients on each health check.
+FAKE_WIREPROXY_ACTIVE="1"
+FAKE_SOCKS_LISTENING="1"
+FAKE_RESTARTS="0"
+systemctl() {
+  [[ "$1" == "is-active" && "$2" == "--quiet" && "$3" == "wireproxy" ]] || return 1
+  [[ "$FAKE_WIREPROXY_ACTIVE" == "1" ]]
+}
+socks_port_listening() { [[ "$FAKE_SOCKS_LISTENING" == "1" ]]; }
+restart_wireproxy() { FAKE_RESTARTS=$((FAKE_RESTARTS + 1)); }
+expect_true "healthy wireproxy needs no restart" ensure_wireproxy_ready_for_check
+[[ "$FAKE_RESTARTS" == "0" ]] || fail "health check restarted an active wireproxy"
+FAKE_SOCKS_LISTENING="0"
+expect_true "missing SOCKS listener restarts wireproxy" ensure_wireproxy_ready_for_check
+[[ "$FAKE_RESTARTS" == "1" ]] || fail "missing SOCKS listener did not restart wireproxy"
+FAKE_SOCKS_LISTENING="1"; FAKE_WIREPROXY_ACTIVE="0"
+expect_true "inactive wireproxy restarts" ensure_wireproxy_ready_for_check
+[[ "$FAKE_RESTARTS" == "2" ]] || fail "inactive wireproxy did not restart"
+
 RESULT_FILE="$tmp_dir/results.tsv"
 printf '%s\n' \
   $'fast-fallback:2408\tOK\t0.050000\t1.1.1.1\tDME\tRU\ton\t0\t1\tMISMATCH\tnative' \

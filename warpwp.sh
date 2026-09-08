@@ -4,7 +4,7 @@
 
 set -Eeuo pipefail
 
-VERSION="1.3.0"
+VERSION="1.3.1"
 REPO_RAW="https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main"
 NATIVE_URL="$REPO_RAW/warp-wireproxy-native.sh"
 MANAGER_URL="$REPO_RAW/warpwp.sh"
