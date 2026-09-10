@@ -18,6 +18,14 @@ trap 'rm -rf "$tmp_dir"' EXIT
 [[ "$(normalize_code_list 'hel, arn HEL')" == "HEL,ARN" ]] || fail "normalize_code_list"
 parse_args --scanner auto --node 'hel,arn' --avoid-country ru --policy-mode strict --stability-probes 7
 [[ "$SCANNER:$NODE_ALLOW:$COUNTRY_DENY:$POLICY_MODE:$STABILITY_PROBES" == "auto:HEL,ARN:RU:strict:7" ]] || fail "parse_args scanner/policy"
+if (parse_args --ports '' >/dev/null 2>&1); then fail "empty --ports must be rejected"; fi
+
+USE_CUSTOM_ENDPOINTS="1"
+CUSTOM_ENDPOINTS=("162.159.192.1:2408" "[2606:4700:103::1]:443")
+CANDIDATES_FILE="$tmp_dir/custom-candidates.txt"
+generate_endpoint_candidates >/dev/null
+[[ "$(paste -sd, "$CANDIDATES_FILE")" == "162.159.192.1:2408,[2606:4700:103::1]:443" ]] || fail "custom endpoints must be exclusive"
+USE_CUSTOM_ENDPOINTS="0"; CUSTOM_ENDPOINTS=()
 
 # Эти globals читает endpoint_matches_policy из sourced native-скрипта.
 NODE_ALLOW="HEL,ARN"; NODE_DENY=""; COUNTRY_ALLOW="DE,NL"; COUNTRY_DENY="RU"
@@ -78,6 +86,12 @@ expect_true "stable probe series" stability_check 0.100000
 : > "$FAKE_CURL_STATE_FILE"; FAKE_CURL_MODE="torn"
 expect_false "trailing teardown" stability_check 0.100000
 [[ "$LAST_STABILITY_LOSS:$LAST_STABILITY_TORN" == "40:1" ]] || fail "teardown metrics"
+
+curl() {
+  printf 'warp=on\n__TIME_TOTAL__=0.100000\n__HTTP_CODE__=200\n'
+  return 56
+}
+expect_false "partial curl output must not pass WARP check" quick_warp_check
 
 WG_DIR="$tmp_dir/wireguard"
 GOOD_ENDPOINTS_FILE="$WG_DIR/warp-endpoints.good"
@@ -153,5 +167,9 @@ expect_true "valid IPv6 endpoint" valid_scanned_endpoint '[2606:4700:103::1]:443
 expect_false "invalid scanned endpoint" valid_scanned_endpoint 'bad;endpoint:2408'
 expect_false "invalid IPv4 endpoint" valid_scanned_endpoint '999.159.192.1:2408'
 expect_false "invalid IPv6 endpoint" valid_scanned_endpoint '[1:]:443'
+SOCKS_HOST="0.0.0.0"; SOCKS_PORT="40123"
+[[ "$(socks_proxy_url)" == "socks5h://127.0.0.1:40123" ]] || fail "wildcard IPv4 bind must use loopback for checks"
+SOCKS_HOST="[::1]"
+[[ "$(socks_proxy_url)" == "socks5h://[::1]:40123" ]] || fail "IPv6 proxy URL must be bracketed"
 
 printf '[OK] native policy/stability/cache tests completed\n'

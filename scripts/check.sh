@@ -39,6 +39,7 @@ fi
 echo
 echo "== Unit tests =="
 bash scripts/test-native.sh
+bash scripts/test-manager.sh
 
 echo
 printf '[OK] checks completed\n'

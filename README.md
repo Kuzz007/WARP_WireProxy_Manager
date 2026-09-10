@@ -3,7 +3,7 @@
 `WARP WireProxy Manager` — неинтерактивный установщик и менеджер для схемы:
 
 ```text
-3x-ui / Xray → socks5://127.0.0.1:40000 → wireproxy → Cloudflare WARP → internet
+3x-ui / Xray → socks5://127.0.0.1:40000 (по умолчанию) → wireproxy → Cloudflare WARP → internet
 ```
 
 Проект рассчитан на VPS с Linux + systemd. Цель — быстро поднять Cloudflare WARP как **локальный SOCKS5 outbound** для 3x-ui/Xray, автоматически подобрать рабочий WARP endpoint и поддерживать его живым через один scheduler: cron или systemd timer.
@@ -12,7 +12,7 @@
 
 ## Важно про маршрутизацию
 
-Этот проект **не должен** превращать весь VPS в WARP-VPN клиент. WARP используется только через `wireproxy` и локальный SOCKS5 `127.0.0.1:40000`.
+Этот проект **не должен** превращать весь VPS в WARP-VPN клиент. WARP используется только через `wireproxy` и локальный SOCKS5 `127.0.0.1:40000` по умолчанию.
 
 Не запускай WARP-конфиг через `wg-quick`:
 
@@ -52,8 +52,8 @@ https://github.com/kuzzrus/WARP_WireProxy_Manager
 Текущая версия:
 
 ```text
-warpwp v1.3.2
-warp-wireproxy-native.sh v1.2.1
+warpwp v1.3.3
+warp-wireproxy-native.sh v1.2.2
 ```
 
 ---
@@ -144,7 +144,7 @@ warpwp --fix-routing
 
 ```text
 ============================================================
- WARP + wireproxy manager v1.3.2
+ WARP + wireproxy manager v1.3.3
 ============================================================
  1) Установить / обновить WARP + wireproxy + cron
  2) Проверить состояние

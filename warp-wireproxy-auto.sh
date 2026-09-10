@@ -4,7 +4,7 @@
 #
 # Старый вариант через внешний установщик больше не используется.
 # Для установки применяй:
-#   bash <(curl -fsSL https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warpwp.sh) --install-manager
+#   bash <(curl -fsSL https://raw.githubusercontent.com/kuzzrus/WARP_WireProxy_Manager/main/warpwp.sh) --install-manager
 #   warpwp --install
 #
 # Этот файл оставлен для обратной совместимости: он скачивает актуальный
@@ -12,7 +12,7 @@
 
 set -Eeuo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main"
+REPO_RAW="https://raw.githubusercontent.com/kuzzrus/WARP_WireProxy_Manager/main"
 NATIVE_URL="$REPO_RAW/warp-wireproxy-native.sh"
 TMP_SCRIPT=""
 
@@ -25,7 +25,7 @@ usage() {
 warp-wireproxy-auto.sh устарел.
 
 Используй основной менеджер:
-  bash <(curl -fsSL "https://raw.githubusercontent.com/Kuzz007/WARP_WireProxy_Manager/main/warpwp.sh?nocache=\$(date +%s)") --install-manager
+  bash <(curl -fsSL "https://raw.githubusercontent.com/kuzzrus/WARP_WireProxy_Manager/main/warpwp.sh?nocache=\$(date +%s)") --install-manager
   warpwp --install
 
 Для совместимости этот wrapper передаёт аргументы в warp-wireproxy-native.sh.
@@ -39,6 +39,7 @@ warp-wireproxy-auto.sh устарел.
 EOF_USAGE
 }
 
+# shellcheck disable=SC2329 # invoked indirectly by the EXIT trap
 cleanup() {
   [[ -n "$TMP_SCRIPT" ]] && rm -f "$TMP_SCRIPT" 2>/dev/null || true
 }
@@ -65,5 +66,12 @@ warn "warp-wireproxy-auto.sh устарел. Используй warpwp --install
 log "Скачиваю актуальный native-скрипт из текущего репозитория..."
 TMP_SCRIPT="$(mktemp)"
 curl -fsSL "${NATIVE_URL}?nocache=$(date +%s)" -o "$TMP_SCRIPT"
-chmod +x "$TMP_SCRIPT"
-exec "$TMP_SCRIPT" "$@"
+bash -n "$TMP_SCRIPT"
+chmod 0755 "$TMP_SCRIPT"
+
+if "$TMP_SCRIPT" "$@"; then
+  native_rc=0
+else
+  native_rc=$?
+fi
+exit "$native_rc"
