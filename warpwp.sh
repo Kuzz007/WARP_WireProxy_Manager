@@ -4,7 +4,7 @@
 
 set -Eeuo pipefail
 
-VERSION="1.3.4"
+VERSION="1.3.5"
 REPO_SLUG="kuzzrus/WARP_WireProxy_Manager"
 GITHUB_API="https://api.github.com/repos/$REPO_SLUG"
 RELEASE_DOWNLOAD_BASE="https://github.com/$REPO_SLUG/releases/download"
@@ -745,20 +745,17 @@ menu() { while true; do clear || true; echo "WARP + wireproxy manager v$VERSION"
 10) PURGE / жёсткая очистка WARP-следов
 11) Включить cron/check и отключить timer
 12) Показать блоки для 3x-ui / Xray
-13) Показать строки для zapret4rocket
-14) Quick scan endpoint
-15) Deep scan endpoint
-16) Показать JSON-статус
-17) Включить systemd timer и отключить cron
-18) Статус systemd timer
-19) Удалить systemd timer
-20) Scheduler status
-21) Вставить WireGuard .conf и получить JSON для 3x-ui
-22) Конвертировать WireGuard .conf файл в JSON для 3x-ui
-23) Fix routing / убрать системный WARP full-tunnel
+13) Quick scan endpoint
+14) Deep scan endpoint
+15) Показать JSON-статус
+16) Включить systemd timer и отключить cron
+17) Статус systemd timer
+18) Удалить systemd timer
+19) Scheduler status
+20) Fix routing / убрать системный WARP full-tunnel
 0) Выход
 EOF_MENU
-read -rp "Выбери пункт: " choice; case "$choice" in 1) install_or_update_all; pause ;; 2) status; pause ;; 3) repair_endpoint; pause ;; 4) update_local_scripts; restart_updated_manager ;; 5) remove_safe; pause ;; 6) show_logs; pause ;; 7) print_commands; pause ;; 8) print_memo_full; pause ;; 9) doctor; pause ;; 10) purge_all; pause ;; 11) install_cron_check; pause ;; 12) print_xray; pause ;; 13) print_zapret; pause ;; 14) quick_scan; pause ;; 15) deep_scan; pause ;; 16) status_json; pause ;; 17) install_timer_check; pause ;; 18) timer_status; pause ;; 19) remove_timer_check; pause ;; 20) scheduler_status; pause ;; 21) wg_paste_to_json; pause ;; 22) wg_conf_to_json; pause ;; 23) fix_routing; pause ;; 0) exit 0 ;; *) echo "Неверный пункт"; sleep 1 ;; esac; done; }
+read -rp "Выбери пункт: " choice; case "$choice" in 1) install_or_update_all; pause ;; 2) status; pause ;; 3) repair_endpoint; pause ;; 4) update_local_scripts; restart_updated_manager ;; 5) remove_safe; pause ;; 6) show_logs; pause ;; 7) print_commands; pause ;; 8) print_memo_full; pause ;; 9) doctor; pause ;; 10) purge_all; pause ;; 11) install_cron_check; pause ;; 12) print_xray; pause ;; 13) quick_scan; pause ;; 14) deep_scan; pause ;; 15) status_json; pause ;; 16) install_timer_check; pause ;; 17) timer_status; pause ;; 18) remove_timer_check; pause ;; 19) scheduler_status; pause ;; 20) fix_routing; pause ;; 0) exit 0 ;; *) echo "Неверный пункт"; sleep 1 ;; esac; done; }
 
 main() {
   case "${1:-}" in

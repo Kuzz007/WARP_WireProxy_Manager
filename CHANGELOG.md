@@ -1,5 +1,10 @@
 # Changelog
 
+## v1.3.5 — simplified interactive menu
+
+- Из меню убраны малоиспользуемые пункты zapret4rocket и два WireGuard→JSON помощника; оставшиеся пункты перенумерованы с 13 по 20.
+- CLI-команды `--zapret`, `--wg-paste` и `--wg-json` сохранены для обратной совместимости.
+
 ## v1.3.4 — signed release updates
 
 - `warpwp --update` и автоматическое обновление перед `--install` получают scripts только из GitHub Release конкретного тега, а не из ветки `main`.
