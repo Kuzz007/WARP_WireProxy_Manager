@@ -4,10 +4,15 @@
 
 set -Eeuo pipefail
 
-VERSION="1.3.3"
-REPO_RAW="https://raw.githubusercontent.com/kuzzrus/WARP_WireProxy_Manager/main"
-NATIVE_URL="$REPO_RAW/warp-wireproxy-native.sh"
-MANAGER_URL="$REPO_RAW/warpwp.sh"
+VERSION="1.3.4"
+REPO_SLUG="kuzzrus/WARP_WireProxy_Manager"
+GITHUB_API="https://api.github.com/repos/$REPO_SLUG"
+RELEASE_DOWNLOAD_BASE="https://github.com/$REPO_SLUG/releases/download"
+RELEASE_SIGNING_ID="warpwp-release"
+RELEASE_SIGNING_NAMESPACE="warpwp-release"
+# Публичный ключ подписи release-артефактов. Закрытый ключ хранится только в
+# GitHub Actions secret WARPWP_RELEASE_SIGNING_KEY и никогда не попадает в repo.
+RELEASE_SIGNING_PUBLIC_KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEa+mDJ1BJ6w2YdAogupkcdL8MJLo2XjMJlPT9WyQyA3"
 
 MANAGER_BIN="/usr/local/bin/warpwp"
 NATIVE_BIN="/usr/local/bin/warp-wireproxy-native.sh"
@@ -76,25 +81,59 @@ acquire_admin_lock() {
   fi
   export WARPWP_ADMIN_LOCK_FD="$ADMIN_LOCK_FD"
 }
-stage_download_exec() {
-  local url="$1" tmp="$2"
-  if ! curl -fsSL --retry 2 --connect-timeout 15 "${url}?nocache=$(date +%s)" -o "$tmp"; then
-    err "Failed to download $url"
-    return 1
-  fi
-  if [[ ! -s "$tmp" ]] || ! bash -n "$tmp"; then
-    err "Downloaded script failed bash -n validation: $url"
-    return 1
-  fi
-  chmod 0755 "$tmp"
+valid_release_tag() { [[ "${1:-}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; }
+release_asset_url() { local tag="$1" asset="$2"; valid_release_tag "$tag" || return 1; printf '%s/%s/%s' "$RELEASE_DOWNLOAD_BASE" "$tag" "$asset"; }
+
+install_release_verifier() {
+  command -v sha256sum >/dev/null 2>&1 && command -v ssh-keygen >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 && return 0
+  log "Устанавливаю инструменты проверки release-подписи: sha256sum, ssh-keygen, python3"
+  if command -v apt-get >/dev/null 2>&1; then apt-get update -y || true; DEBIAN_FRONTEND=noninteractive apt-get install -y coreutils openssh-client python3
+  elif command -v dnf >/dev/null 2>&1; then dnf install -y coreutils openssh-clients python3
+  elif command -v yum >/dev/null 2>&1; then yum install -y coreutils openssh-clients python3
+  elif command -v apk >/dev/null 2>&1; then apk add --no-cache coreutils openssh-client python3
+  else err "Не найдены инструменты для проверки подписи: sha256sum, ssh-keygen, python3"; return 1; fi
+  command -v sha256sum >/dev/null 2>&1 && command -v ssh-keygen >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1 || { err "Не удалось установить инструменты проверки подписи release."; return 1; }
 }
-safe_download_exec() {
-  local url="$1" dest="$2" tmp
-  mkdir -p "$(dirname "$dest")"
-  tmp="$(mktemp "${dest}.tmp.XXXXXX")"
-  if ! stage_download_exec "$url" "$tmp"; then rm -f -- "$tmp"; return 1; fi
-  if ! mv -f -- "$tmp" "$dest"; then rm -f -- "$tmp"; return 1; fi
-  chmod 0755 "$dest"
+
+resolve_release_tag() {
+  local requested="${1:-}" response tag
+  if [[ -n "$requested" ]]; then
+    valid_release_tag "$requested" || { err "Некорректный tag release: $requested"; return 1; }
+    printf '%s' "$requested"
+    return 0
+  fi
+  response="$(curl -fsSL --retry 2 --connect-timeout 15 -H 'Accept: application/vnd.github+json' "$GITHUB_API/releases/latest")" || { err "Не удалось получить latest release из GitHub API. Укажи tag явно: warpwp --update vX.Y.Z"; return 1; }
+  tag="$(python3 -c 'import json, sys; print(json.load(sys.stdin).get("tag_name", ""))' <<< "$response" 2>/dev/null || true)"
+  valid_release_tag "$tag" || { err "GitHub API вернул некорректный tag release: ${tag:-empty}"; return 1; }
+  printf '%s' "$tag"
+}
+
+verify_release_manifest() {
+  local manifest="$1" signature="$2" allowed_signers="$3"
+  printf '%s %s\n' "$RELEASE_SIGNING_ID" "$RELEASE_SIGNING_PUBLIC_KEY" > "$allowed_signers"
+  if ! ssh-keygen -Y verify -f "$allowed_signers" -I "$RELEASE_SIGNING_ID" -n "$RELEASE_SIGNING_NAMESPACE" -s "$signature" < "$manifest" >/dev/null 2>&1; then
+    err "Подпись SHA256SUMS не прошла проверку. Обновление отменено."
+    return 1
+  fi
+}
+
+download_release_manifest() {
+  local tag="$1" manifest="$2" signature="$3" allowed_signers="$4"
+  curl -fsSL --retry 2 --connect-timeout 15 "$(release_asset_url "$tag" SHA256SUMS)" -o "$manifest" || { err "Не удалось скачать SHA256SUMS для $tag"; return 1; }
+  curl -fsSL --retry 2 --connect-timeout 15 "$(release_asset_url "$tag" SHA256SUMS.sig)" -o "$signature" || { err "Не удалось скачать подпись SHA256SUMS для $tag"; return 1; }
+  [[ -s "$manifest" && -s "$signature" ]] || { err "Release $tag содержит пустой manifest или подпись."; return 1; }
+  verify_release_manifest "$manifest" "$signature" "$allowed_signers"
+}
+
+stage_release_asset() {
+  local tag="$1" asset="$2" manifest="$3" tmp="$4" expected actual
+  expected="$(awk -v asset="$asset" '$2 == asset || $2 == "*" asset {print $1; exit}' "$manifest")"
+  [[ "$expected" =~ ^[a-fA-F0-9]{64}$ ]] || { err "В SHA256SUMS release $tag нет корректной суммы для $asset"; return 1; }
+  if ! curl -fsSL --retry 2 --connect-timeout 15 "$(release_asset_url "$tag" "$asset")" -o "$tmp"; then err "Не удалось скачать $asset из release $tag"; return 1; fi
+  actual="$(sha256sum "$tmp" | awk '{print $1}')"
+  [[ "$actual" == "$expected" ]] || { err "SHA-256 $asset не совпадает с подписанным manifest. Обновление отменено."; return 1; }
+  if [[ ! -s "$tmp" ]] || ! bash -n "$tmp"; then err "Release-артефакт $asset не прошёл bash -n."; return 1; fi
+  chmod 0755 "$tmp"
 }
 configured_bind_address() { grep -i '^[[:space:]]*BindAddress[[:space:]]*=' "$WG_DIR/proxy.conf" 2>/dev/null | head -n1 | cut -d= -f2- | xargs || true; }
 current_socks_host() {
@@ -157,21 +196,28 @@ ask_timer_minutes() {
   echo "$input"
 }
 
-install_manager() { acquire_admin_lock; need_curl; log "Устанавливаю менеджер в $MANAGER_BIN"; safe_download_exec "$MANAGER_URL" "$MANAGER_BIN"; ok "Готово. Теперь меню запускается командой: warpwp"; }
+install_manager() { acquire_admin_lock; update_local_scripts "${1:-}"; ok "Готово. Теперь меню запускается командой: warpwp"; }
 update_local_scripts() (
   acquire_admin_lock
   need_curl
-  local native_stage manager_stage native_backup manager_backup had_native=0 had_manager=0
+  install_release_verifier
+  local requested_tag="${1:-}" release_tag native_stage manager_stage native_backup manager_backup manifest signature allowed_signers had_native=0 had_manager=0
+  release_tag="$(resolve_release_tag "$requested_tag")" || return 1
   mkdir -p "$(dirname "$NATIVE_BIN")" "$(dirname "$MANAGER_BIN")"
   native_stage="$(mktemp "${NATIVE_BIN}.new.XXXXXX")"
   manager_stage="$(mktemp "${MANAGER_BIN}.new.XXXXXX")"
   native_backup="$(mktemp "${NATIVE_BIN}.bak.XXXXXX")"
   manager_backup="$(mktemp "${MANAGER_BIN}.bak.XXXXXX")"
-  trap 'rm -f -- "$native_stage" "$manager_stage" "$native_backup" "$manager_backup"' EXIT
-  log "Загружаю и проверяю native-скрипт..."
-  stage_download_exec "$NATIVE_URL" "$native_stage"
-  log "Загружаю и проверяю менеджер..."
-  stage_download_exec "$MANAGER_URL" "$manager_stage"
+  manifest="$(mktemp "${MANAGER_BIN}.manifest.XXXXXX")"
+  signature="$(mktemp "${MANAGER_BIN}.manifest-signature.XXXXXX")"
+  allowed_signers="$(mktemp "${MANAGER_BIN}.allowed-signers.XXXXXX")"
+  trap 'rm -f -- "$native_stage" "$manager_stage" "$native_backup" "$manager_backup" "$manifest" "$signature" "$allowed_signers"' EXIT
+  log "Получаю подписанный manifest release $release_tag..."
+  download_release_manifest "$release_tag" "$manifest" "$signature" "$allowed_signers"
+  log "Загружаю и сверяю native-скрипт из $release_tag..."
+  stage_release_asset "$release_tag" warp-wireproxy-native.sh "$manifest" "$native_stage"
+  log "Загружаю и сверяю менеджер из $release_tag..."
+  stage_release_asset "$release_tag" warpwp.sh "$manifest" "$manager_stage"
   if [[ -e "$NATIVE_BIN" || -L "$NATIVE_BIN" ]]; then cp -p -- "$NATIVE_BIN" "$native_backup"; had_native=1; fi
   if [[ -e "$MANAGER_BIN" || -L "$MANAGER_BIN" ]]; then cp -p -- "$MANAGER_BIN" "$manager_backup"; had_manager=1; fi
   if ! mv -f -- "$native_stage" "$NATIVE_BIN"; then err "Не удалось установить native-скрипт."; return 1; fi
@@ -182,7 +228,7 @@ update_local_scripts() (
     return 1
   fi
   chmod 0755 "$NATIVE_BIN" "$MANAGER_BIN"
-  ok "Обновлены: $NATIVE_BIN и $MANAGER_BIN"
+  ok "Обновлены из проверенного release $release_tag: $NATIVE_BIN и $MANAGER_BIN"
 )
 restart_updated_manager() { [[ -x "$MANAGER_BIN" ]] || { err "Не найден обновлённый менеджер: $MANAGER_BIN"; return 1; }; log "Перезапускаю менеджер из обновлённого файла..."; exec "$MANAGER_BIN" "$@"; }
 remove_cron_check() { rm -f "$CRON_FILE"; systemctl restart cron 2>/dev/null || systemctl restart crond 2>/dev/null || true; }
@@ -716,7 +762,7 @@ read -rp "Выбери пункт: " choice; case "$choice" in 1) install_or_upd
 
 main() {
   case "${1:-}" in
-    --install-manager) install_manager ;;
+    --install-manager) install_manager "${2:-}" ;;
     --install) install_or_update_all --cli ;;
     --install-current) finish_install_or_update_all; if [[ "${2:-}" == "--menu" ]]; then pause; menu; fi ;;
     --install-cron|--cron) install_cron_check ;;
@@ -724,7 +770,7 @@ main() {
     --timer-status) timer_status ;;
     --scheduler-status|--scheduler) scheduler_status ;;
     --remove-timer) remove_timer_check ;;
-    --update|--self-update) update_local_scripts ;;
+    --update|--self-update) update_local_scripts "${2:-}" ;;
     --status) status ;;
     --status-json|--json) status_json ;;
     --doctor) doctor ;;

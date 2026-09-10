@@ -52,7 +52,7 @@ https://github.com/kuzzrus/WARP_WireProxy_Manager
 Текущая версия:
 
 ```text
-warpwp v1.3.3
+warpwp v1.3.4
 warp-wireproxy-native.sh v1.2.2
 ```
 
@@ -60,21 +60,19 @@ warp-wireproxy-native.sh v1.2.2
 
 ## Быстрый старт
 
-Установить менеджер:
+Установить менеджер из подписанного release (замени `TAG` на нужную версию):
 
 ```bash
-bash <(curl -fsSL "https://raw.githubusercontent.com/kuzzrus/WARP_WireProxy_Manager/main/warpwp.sh?nocache=$(date +%s)") --install-manager
-```
-
-Если raw-кэш GitHub отдаёт старую версию, поставить через GitHub API:
-
-```bash
-curl -fsSL \
-  -H "Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/kuzzrus/WARP_WireProxy_Manager/contents/warpwp.sh?ref=main" \
-  -o /usr/local/bin/warpwp
-
-chmod +x /usr/local/bin/warpwp
+TAG=v1.3.4
+BASE="https://github.com/kuzzrus/WARP_WireProxy_Manager/releases/download/$TAG"
+TMP_DIR="$(mktemp -d)" && trap 'rm -rf "$TMP_DIR"' EXIT
+for FILE in warpwp.sh warp-wireproxy-native.sh install-warp-check.sh warp-wireproxy-auto.sh release-signing.pub SHA256SUMS SHA256SUMS.sig; do
+  curl -fsSLo "$TMP_DIR/$FILE" "$BASE/$FILE"
+done
+printf '%s\n' 'warpwp-release ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEa+mDJ1BJ6w2YdAogupkcdL8MJLo2XjMJlPT9WyQyA3' > "$TMP_DIR/allowed_signers"
+ssh-keygen -Y verify -f "$TMP_DIR/allowed_signers" -I warpwp-release -n warpwp-release -s "$TMP_DIR/SHA256SUMS.sig" < "$TMP_DIR/SHA256SUMS"
+(cd "$TMP_DIR" && sha256sum -c --strict SHA256SUMS)
+install -m 0755 "$TMP_DIR/warpwp.sh" /usr/local/bin/warpwp
 ```
 
 Установить/обновить WARP + wireproxy + cron:
@@ -129,6 +127,7 @@ warpwp --fix-routing
 | `warpwp --logs` | Показать логи |
 | `warpwp --memo` | Показать полную памятку |
 | `warpwp --update` | Обновить локальные скрипты |
+| `warpwp --update vX.Y.Z` | Поставить конкретный подписанный release |
 | `warpwp --version` | Показать версию менеджера |
 | `warpwp --remove` | Безопасно удалить компоненты менеджера |
 | `warpwp --purge` | Жёстко удалить WARP/wireproxy/wgcf/warp-cli/fscarmen-следы |
@@ -144,7 +143,7 @@ warpwp --fix-routing
 
 ```text
 ============================================================
- WARP + wireproxy manager v1.3.3
+ WARP + wireproxy manager v1.3.4
 ============================================================
  1) Установить / обновить WARP + wireproxy + cron
  2) Проверить состояние
@@ -458,15 +457,12 @@ ip link show warp
 warpwp --update
 ```
 
-Через GitHub API, если raw-кэш отдаёт старую версию:
+`--update` получает GitHub Release, проверяет подпись `SHA256SUMS.sig` встроенным публичным ключом и только затем сверяет SHA-256 скриптов. Он никогда не скачивает исполняемый код из ветки `main`.
+
+Чтобы установить строго определённую версию:
 
 ```bash
-curl -fsSL \
-  -H "Accept: application/vnd.github.raw" \
-  "https://api.github.com/repos/kuzzrus/WARP_WireProxy_Manager/contents/warpwp.sh?ref=main" \
-  -o /usr/local/bin/warpwp
-
-chmod +x /usr/local/bin/warpwp
+warpwp --update v1.3.4
 ```
 
 ---

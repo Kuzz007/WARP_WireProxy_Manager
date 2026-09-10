@@ -8,9 +8,10 @@
 
 set -Eeuo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/kuzzrus/WARP_WireProxy_Manager/main"
-SCRIPT_URL="$REPO_RAW/warp-wireproxy-native.sh"
-SELF_URL="$REPO_RAW/install-warp-check.sh"
+RELEASE_TAG="${WARPWP_RELEASE_TAG:-v1.3.4}"
+RELEASE_BASE="https://github.com/kuzzrus/WARP_WireProxy_Manager/releases/download/$RELEASE_TAG"
+SCRIPT_URL="$RELEASE_BASE/warp-wireproxy-native.sh"
+SELF_URL="$RELEASE_BASE/install-warp-check.sh"
 LOCAL_SCRIPT="/usr/local/bin/warp-wireproxy-native.sh"
 CRON_FILE="/etc/cron.d/warp-wireproxy-check"
 LOG_FILE="/var/log/warp-check.log"
@@ -175,7 +176,7 @@ install_native_script() {
   mkdir -p "$target_dir"
 
   TMP_SCRIPT="$(mktemp "$target_dir/.warp-wireproxy-native.XXXXXX")"
-  curl -fsSL "${SCRIPT_URL}?nocache=$(date +%s)" -o "$TMP_SCRIPT"
+  curl -fsSL "$SCRIPT_URL" -o "$TMP_SCRIPT"
   bash -n "$TMP_SCRIPT"
   chmod 0755 "$TMP_SCRIPT"
 
@@ -306,4 +307,4 @@ echo "Посмотреть последние логи:"
 echo "  tail -n 80 $LOG_FILE"
 echo
 echo "Удалить cron-задачу:"
-echo "  bash <(curl -fsSL $SELF_URL) --remove"
+echo "  WARPWP_RELEASE_TAG=$RELEASE_TAG bash <(curl -fsSL $SELF_URL) --remove"
