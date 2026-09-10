@@ -1,5 +1,12 @@
 # Changelog
 
+## v1.3.4 — signed release updates
+
+- `warpwp --update` и автоматическое обновление перед `--install` получают scripts только из GitHub Release конкретного тега, а не из ветки `main`.
+- В release добавляются `SHA256SUMS` и подписанный OpenSSH manifest `SHA256SUMS.sig`; перед заменой файлов manager проверяет подпись встроенным публичным ключом, SHA-256 и `bash -n`.
+- Добавлен workflow публикации: при push тега он запускает все проверки, собирает assets, подписывает manifest закрытым ключом из GitHub Actions secret `WARPWP_RELEASE_SIGNING_KEY` и создаёт GitHub Release.
+- Добавлены unit-тесты подписи manifest, детектирования подмены и парного обновления из подписанного release.
+
 ## v1.3.3 — warpwp 1.3.3, warp-wireproxy-native.sh 1.2.2
 
 - Исправлено безопасное обновление: manager и native-скрипт сначала скачиваются и проходят `bash -n`, затем заменяются одной парой с откатом при ошибке. Установленные файлы имеют режим `0755`.
