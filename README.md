@@ -1,5 +1,7 @@
 # WARP WireProxy Manager
 
+![WARP WireProxy Manager](assets/warp-wireproxy-manager-logo.png)
+
 `WARP WireProxy Manager` — неинтерактивный установщик и менеджер для схемы:
 
 ```text
