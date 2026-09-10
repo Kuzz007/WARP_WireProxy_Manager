@@ -5,9 +5,11 @@
 
 set -Eeuo pipefail
 
-VERSION="1.2.1"
+VERSION="1.2.2"
 SOCKS_HOST="127.0.0.1"
 SOCKS_PORT="40000"
+SOCKS_HOST_EXPLICIT="0"
+SOCKS_PORT_EXPLICIT="0"
 SCAN_COUNT="50"
 USE_CUSTOM_ENDPOINTS="0"
 FORCE_REGISTER="0"
@@ -40,9 +42,16 @@ GOOD_ENDPOINTS_FILE="$WG_DIR/warp-endpoints.good"
 BAD_ENDPOINTS_FILE="$WG_DIR/warp-endpoints.bad"
 SERVICE_FILE="/etc/systemd/system/wireproxy.service"
 TEST_URL="https://www.cloudflare.com/cdn-cgi/trace"
-RESULT_FILE="/tmp/warp_native_results.$$"
-CANDIDATES_FILE="/tmp/warp_native_candidates.$$"
+TMP_DIR=""
+RESULT_FILE=""
+CANDIDATES_FILE=""
 WARPSCOUT_ACCOUNT_FILE=""
+INTERNAL_LOCK_FILE="/var/lock/warpwp-native.lock"
+INTERNAL_LOCK_HELD="0"
+SCAN_TRANSACTION_ACTIVE="0"
+SCAN_ORIGINAL_ENDPOINT=""
+REGISTRATION_TRANSACTION_ACTIVE="0"
+REGISTRATION_TRANSACTION_DIR=""
 
 BEST_ENDPOINT=""
 BEST_TIME=""
@@ -99,36 +108,138 @@ usage() {
 EOF_USAGE
 }
 
+require_option_value() {
+  local option="$1" value="${2:-}"
+  [[ -n "$value" && "$value" != --* ]] || {
+    err "Для $option требуется непустое значение."
+    exit 1
+  }
+}
+
+valid_port() {
+  [[ "$1" =~ ^[0-9]{1,5}$ ]] && ((10#$1 >= 1 && 10#$1 <= 65535))
+}
+
+decimal_number() {
+  local value="$1"
+  [[ "$value" =~ ^[0-9]{1,9}$ ]] || return 1
+  printf '%s' "$((10#$value))"
+}
+
+valid_ipv4() {
+  local value="$1" part
+  local -a octets
+  [[ "$value" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || return 1
+  IFS=. read -r -a octets <<< "$value"
+  [[ "${#octets[@]}" -eq 4 ]] || return 1
+  for part in "${octets[@]}"; do
+    [[ "$part" =~ ^[0-9]{1,3}$ ]] && ((10#$part <= 255)) || return 1
+  done
+}
+
+valid_hostname() {
+  local value="$1" label
+  local -a labels
+  [[ -n "$value" && "${#value}" -le 253 && "$value" != .* && "$value" != *. ]] || return 1
+  IFS=. read -r -a labels <<< "$value"
+  for label in "${labels[@]}"; do
+    [[ -n "$label" && "${#label}" -le 63 && "$label" =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+  done
+}
+
+valid_host() {
+  local value="$1" inner
+  if [[ "$value" =~ ^\[([^][]+)\]$ ]]; then
+    inner="${BASH_REMATCH[1]}"
+    [[ "$inner" == *:* && "$inner" =~ ^[0-9A-Fa-f:.%A-Za-z_-]+$ ]]
+  elif [[ "$value" == *:* ]]; then
+    return 1
+  elif [[ "$value" =~ ^[0-9.]+$ ]]; then
+    valid_ipv4 "$value"
+  else
+    valid_hostname "$value"
+  fi
+}
+
+valid_endpoint() {
+  local endpoint="$1" host port
+  if [[ "$endpoint" =~ ^\[([^][]+)\]:([0-9]+)$ ]]; then
+    host="[${BASH_REMATCH[1]}]"
+    port="${BASH_REMATCH[2]}"
+  elif [[ "$endpoint" =~ ^([^:]+):([0-9]+)$ ]]; then
+    host="${BASH_REMATCH[1]}"
+    port="${BASH_REMATCH[2]}"
+  else
+    return 1
+  fi
+  valid_host "$host" && valid_port "$port"
+}
+
+validate_runtime_options() {
+  local port endpoint value i
+  value="$(decimal_number "$SCAN_COUNT" 2>/dev/null || true)"
+  [[ -n "$value" && "$value" -ge 1 && "$value" -le 10000 ]] || { err "--scan-count должен быть числом от 1 до 10000."; return 1; }
+  SCAN_COUNT="$value"
+  value="$(decimal_number "$ENOUGH_GOOD" 2>/dev/null || true)"
+  [[ -n "$value" && "$value" -ge 1 && "$value" -le 10000 ]] || { err "--enough-good должен быть числом от 1 до 10000."; return 1; }
+  ENOUGH_GOOD="$value"
+  value="$(decimal_number "$WARPSCOUT_JOBS" 2>/dev/null || true)"
+  [[ -n "$value" && "$value" -ge 1 && "$value" -le 256 ]] || { err "--warpscout-jobs должен быть числом от 1 до 256."; return 1; }
+  WARPSCOUT_JOBS="$value"
+  value="$(decimal_number "$STABILITY_PROBES" 2>/dev/null || true)"
+  [[ -n "$value" && "$value" -ge 3 && "$value" -le 100 ]] || { err "--stability-probes должен быть числом от 3 до 100."; return 1; }
+  STABILITY_PROBES="$value"
+  valid_host "$SOCKS_HOST" || { err "--host должен быть IPv4, hostname или IPv6 в квадратных скобках."; return 1; }
+  valid_port "$SOCKS_PORT" || { err "--port должен быть числом от 1 до 65535."; return 1; }
+  SOCKS_PORT="$((10#$SOCKS_PORT))"
+  [[ "${#WARP_PORTS[@]}" -gt 0 ]] || { err "--ports не может быть пустым."; return 1; }
+  for i in "${!WARP_PORTS[@]}"; do
+    port="${WARP_PORTS[$i]}"
+    valid_port "$port" || { err "Некорректный порт сканирования: $port"; return 1; }
+    WARP_PORTS[$i]="$((10#$port))"
+  done
+  if [[ "$USE_CUSTOM_ENDPOINTS" == "1" ]]; then
+    [[ "${#CUSTOM_ENDPOINTS[@]}" -gt 0 ]] || { err "--endpoints не может быть пустым."; return 1; }
+    for endpoint in "${CUSTOM_ENDPOINTS[@]}"; do
+      valid_endpoint "$endpoint" || { err "Некорректный endpoint: $endpoint"; return 1; }
+    done
+  fi
+  case "$SCANNER" in native|warpscout|auto) ;; *) err "--scanner: используй native, warpscout или auto."; return 1 ;; esac
+  case "$POLICY_MODE" in prefer|strict) ;; *) err "--policy-mode: используй prefer или strict."; return 1 ;; esac
+}
+
 parse_args() {
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --check) CHECK_ONLY="1"; shift ;;
-      --port) SOCKS_PORT="${2:-}"; shift 2 ;;
-      --host) SOCKS_HOST="${2:-}"; shift 2 ;;
-      --scan-count) SCAN_COUNT="${2:-}"; shift 2 ;;
+      --port) require_option_value "$1" "${2:-}"; SOCKS_PORT="$2"; SOCKS_PORT_EXPLICIT="1"; shift 2 ;;
+      --host) require_option_value "$1" "${2:-}"; SOCKS_HOST="$2"; SOCKS_HOST_EXPLICIT="1"; shift 2 ;;
+      --scan-count) require_option_value "$1" "${2:-}"; SCAN_COUNT="$2"; shift 2 ;;
       --ports)
-        local raw_ports="${2:-}"
+        require_option_value "$1" "${2:-}"
+        local raw_ports="$2"
         raw_ports="${raw_ports//,/ }"
         read -r -a WARP_PORTS <<< "$raw_ports"
         shift 2
         ;;
       --endpoints)
-        local raw_eps="${2:-}"
+        require_option_value "$1" "${2:-}"
+        local raw_eps="$2"
         raw_eps="${raw_eps//,/ }"
         read -r -a CUSTOM_ENDPOINTS <<< "$raw_eps"
         USE_CUSTOM_ENDPOINTS="1"
         shift 2
         ;;
-      --enough-good) ENOUGH_GOOD="${2:-}"; shift 2 ;;
-      --scanner) SCANNER="${2:-}"; shift 2 ;;
-      --warpscout-bin) WARPSCOUT_BIN="${2:-}"; shift 2 ;;
-      --warpscout-jobs) WARPSCOUT_JOBS="${2:-}"; shift 2 ;;
-      --stability-probes) STABILITY_PROBES="${2:-}"; shift 2 ;;
-      --node) NODE_ALLOW="${2:-}"; shift 2 ;;
-      --avoid-node) NODE_DENY="${2:-}"; shift 2 ;;
-      --country) COUNTRY_ALLOW="${2:-}"; shift 2 ;;
-      --avoid-country) COUNTRY_DENY="${2:-}"; shift 2 ;;
-      --policy-mode) POLICY_MODE="${2:-}"; shift 2 ;;
+      --enough-good) require_option_value "$1" "${2:-}"; ENOUGH_GOOD="$2"; shift 2 ;;
+      --scanner) require_option_value "$1" "${2:-}"; SCANNER="$2"; shift 2 ;;
+      --warpscout-bin) require_option_value "$1" "${2:-}"; WARPSCOUT_BIN="$2"; shift 2 ;;
+      --warpscout-jobs) require_option_value "$1" "${2:-}"; WARPSCOUT_JOBS="$2"; shift 2 ;;
+      --stability-probes) require_option_value "$1" "${2:-}"; STABILITY_PROBES="$2"; shift 2 ;;
+      --node) require_option_value "$1" "${2:-}"; NODE_ALLOW="$2"; shift 2 ;;
+      --avoid-node) require_option_value "$1" "${2:-}"; NODE_DENY="$2"; shift 2 ;;
+      --country) require_option_value "$1" "${2:-}"; COUNTRY_ALLOW="$2"; shift 2 ;;
+      --avoid-country) require_option_value "$1" "${2:-}"; COUNTRY_DENY="$2"; shift 2 ;;
+      --policy-mode) require_option_value "$1" "${2:-}"; POLICY_MODE="$2"; shift 2 ;;
       --force-register) FORCE_REGISTER="1"; shift ;;
       --version|-v) echo "warp-wireproxy-native.sh v$VERSION"; exit 0 ;;
       -h|--help) usage; exit 0 ;;
@@ -136,12 +247,7 @@ parse_args() {
     esac
   done
 
-  [[ "$SCAN_COUNT" =~ ^[0-9]+$ && "$SCAN_COUNT" -ge 1 ]] || { err "--scan-count должен быть положительным числом."; exit 1; }
-  [[ "$ENOUGH_GOOD" =~ ^[0-9]+$ && "$ENOUGH_GOOD" -ge 1 ]] || { err "--enough-good должен быть положительным числом."; exit 1; }
-  [[ "$WARPSCOUT_JOBS" =~ ^[0-9]+$ && "$WARPSCOUT_JOBS" -ge 1 ]] || { err "--warpscout-jobs должен быть положительным числом."; exit 1; }
-  [[ "$STABILITY_PROBES" =~ ^[0-9]+$ && "$STABILITY_PROBES" -ge 3 ]] || { err "--stability-probes должен быть числом не меньше 3."; exit 1; }
-  case "$SCANNER" in native|warpscout|auto) ;; *) err "--scanner: используй native, warpscout или auto."; exit 1 ;; esac
-  case "$POLICY_MODE" in prefer|strict) ;; *) err "--policy-mode: используй prefer или strict."; exit 1 ;; esac
+  validate_runtime_options || exit 1
   NODE_ALLOW="$(normalize_code_list "$NODE_ALLOW")"
   NODE_DENY="$(normalize_code_list "$NODE_DENY")"
   COUNTRY_ALLOW="$(normalize_code_list "$COUNTRY_ALLOW")"
@@ -191,9 +297,36 @@ policy_summary() {
 
 require_root() { [[ "${EUID}" -eq 0 ]] || { err "Запусти от root."; exit 1; }; }
 
+init_runtime() {
+  umask 077
+  TMP_DIR="$(mktemp -d /tmp/warp-wireproxy-native.XXXXXX)" || {
+    err "Не удалось создать защищённый временный каталог."
+    exit 1
+  }
+  RESULT_FILE="$TMP_DIR/results.tsv"
+  CANDIDATES_FILE="$TMP_DIR/candidates.txt"
+  WARPSCOUT_ACCOUNT_FILE="$TMP_DIR/warpscout-account.json"
+  : > "$RESULT_FILE"
+  : > "$CANDIDATES_FILE"
+}
+
+acquire_internal_lock() {
+  command -v flock >/dev/null 2>&1 || {
+    err "Не найден flock: установи util-linux."
+    return 1
+  }
+  mkdir -p "$(dirname "$INTERNAL_LOCK_FILE")"
+  exec 9>"$INTERNAL_LOCK_FILE"
+  if ! flock -n 9; then
+    err "Другая установка или проверка WARP уже выполняется."
+    return 75
+  fi
+  INTERNAL_LOCK_HELD="1"
+}
+
 check_deps_light() {
   local missing=()
-  for cmd in curl grep sed awk python3 mktemp systemctl ss sort head cut date ip; do
+  for cmd in curl grep sed awk python3 mktemp flock systemctl ss sort head cut date ip; do
     command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
   done
   if [[ "${#missing[@]}" -gt 0 ]]; then
@@ -205,12 +338,12 @@ check_deps_light() {
 
 install_deps_apt() {
   apt-get update -y || warn "apt update завершился с ошибкой. Продолжаю: часто причина в сломанном стороннем репозитории."
-  DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget ca-certificates grep sed gawk coreutils iproute2 systemd wireguard-tools python3 tar unzip git || { err "Не удалось установить зависимости через apt."; exit 1; }
+  DEBIAN_FRONTEND=noninteractive apt-get install -y curl wget ca-certificates grep sed gawk coreutils util-linux iproute2 systemd wireguard-tools python3 tar unzip git || { err "Не удалось установить зависимости через apt."; exit 1; }
   if ! command -v awk >/dev/null 2>&1 && command -v gawk >/dev/null 2>&1; then ln -sf "$(command -v gawk)" /usr/local/bin/awk; fi
 }
-install_deps_dnf() { dnf install -y curl wget ca-certificates grep sed gawk coreutils iproute systemd wireguard-tools python3 tar unzip git; }
-install_deps_yum() { yum install -y curl wget ca-certificates grep sed gawk coreutils iproute systemd wireguard-tools python3 tar unzip git; }
-install_deps_apk() { apk add --no-cache curl wget ca-certificates grep sed gawk coreutils iproute2 wireguard-tools python3 tar unzip git; }
+install_deps_dnf() { dnf install -y curl wget ca-certificates grep sed gawk coreutils util-linux iproute systemd wireguard-tools python3 tar unzip git; }
+install_deps_yum() { yum install -y curl wget ca-certificates grep sed gawk coreutils util-linux iproute systemd wireguard-tools python3 tar unzip git; }
+install_deps_apk() { apk add --no-cache curl wget ca-certificates grep sed gawk coreutils util-linux iproute2 wireguard-tools python3 tar unzip git; }
 install_deps() {
   log "Проверяю зависимости..."
   if command -v apt-get >/dev/null 2>&1; then install_deps_apt
@@ -219,7 +352,7 @@ install_deps() {
   elif command -v apk >/dev/null 2>&1; then install_deps_apk
   else warn "Неизвестный пакетный менеджер. Убедись, что curl, python3, wg и systemctl установлены."; fi
   local missing=()
-  for cmd in curl wget grep sed awk python3 wg ip ss systemctl sort head cut uniq tar; do command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd"); done
+  for cmd in curl wget grep sed awk python3 mktemp flock wg ip ss systemctl sort head cut uniq tar; do command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd"); done
   [[ "${#missing[@]}" -eq 0 ]] || { err "Не найдены команды: ${missing[*]}"; exit 1; }
   ok "Зависимости готовы."
 }
@@ -251,7 +384,7 @@ sys.exit(1)
 PY
 )" || true
   [[ -z "$url" ]] && return 1
-  tmp="/tmp/wireproxy-download.$$"; tmpdir="/tmp/wireproxy-extract.$$"; mkdir -p "$tmpdir"
+  tmp="$TMP_DIR/wireproxy-download"; tmpdir="$TMP_DIR/wireproxy-extract"; mkdir -p "$tmpdir"
   curl -fL "$url" -o "$tmp"
   if [[ "$url" == *.zip ]]; then unzip -q "$tmp" -d "$tmpdir"; elif [[ "$url" == *.tar.gz || "$url" == *.tgz ]]; then tar -xzf "$tmp" -C "$tmpdir"; else cp "$tmp" "$tmpdir/wireproxy"; fi
   bin="$(find "$tmpdir" -type f \( -name 'wireproxy' -o -name 'wireproxy-*' \) | head -n1 || true)"
@@ -276,50 +409,179 @@ backup_existing() {
   mkdir -p /root/warp-wireproxy-native-backup
   local ts
   ts="$(date +%Y%m%d-%H%M%S)"
-  for f in "$WARP_CONF" "$LEGACY_WARP_CONF" "$PROXY_CONF" "$ACCOUNT_JSON" "$SERVICE_FILE" "$GOOD_ENDPOINTS_FILE" "$BAD_ENDPOINTS_FILE"; do
+  for f in "$WARP_CONF" "$LEGACY_WARP_CONF" "$PROXY_CONF" "$ACCOUNT_JSON" "$PRIVATE_KEY_FILE" "$SERVICE_FILE" "$GOOD_ENDPOINTS_FILE" "$BAD_ENDPOINTS_FILE"; do
     [[ -f "$f" ]] && cp -a "$f" "/root/warp-wireproxy-native-backup/$(basename "$f").$ts.bak" || true
   done
 }
 
 routing_guard_report() {
+  local family label table
   echo "--- WARP routing guard ---"
   if ip link show warp >/dev/null 2>&1; then warn "Найден системный интерфейс warp. Он может ломать входящие SSH/443."; else ok "interface warp отсутствует."; fi
-  if ip rule show 2>/dev/null | grep -Eq 'lookup (51820|warp)'; then warn "Найдены policy rules WARP:"; ip rule show | grep -E 'lookup (51820|warp)' || true; else ok "policy rules WARP не найдены."; fi
-  if ip route show table 51820 2>/dev/null | grep -q .; then warn "Таблица 51820 не пустая:"; ip route show table 51820 || true; else ok "table 51820 пустая/отсутствует."; fi
+  for family in -4 -6; do
+    [[ "$family" == "-4" ]] && label="IPv4" || label="IPv6"
+    if ip "$family" rule show 2>/dev/null | grep -Eq 'lookup (51820|warp)([[:space:]]|$)'; then
+      warn "Найдены policy rules WARP ($label):"
+      ip "$family" rule show 2>/dev/null | grep -E 'lookup (51820|warp)([[:space:]]|$)' || true
+    else
+      ok "policy rules WARP ($label) не найдены."
+    fi
+    for table in 51820 warp; do
+      if ip "$family" route show table "$table" 2>/dev/null | grep -q .; then
+        warn "Таблица $table ($label) не пустая:"
+        ip "$family" route show table "$table" 2>/dev/null || true
+      fi
+    done
+  done
   for svc in wg-quick@warp wg-quick@wgcf warp-svc; do
     if systemctl is-active --quiet "$svc" 2>/dev/null || systemctl is-enabled --quiet "$svc" 2>/dev/null; then warn "Найден конфликтующий service: $svc"; fi
   done
 }
 
 cleanup_system_warp_routes() {
+  local failed=0 family line priority svc
   warn "Проверяю и очищаю системный WARP full-tunnel, если он включён..."
-  systemctl disable --now wg-quick@warp wg-quick@wgcf warp-svc 2>/dev/null || true
-  ip link del warp 2>/dev/null || true
-  while ip rule show 2>/dev/null | grep -Eq 'lookup 51820'; do ip rule del table 51820 2>/dev/null || break; done
-  ip route flush table 51820 2>/dev/null || true
+  for svc in wg-quick@warp wg-quick@wgcf warp-svc; do
+    if systemctl is-active --quiet "$svc" 2>/dev/null || systemctl is-enabled --quiet "$svc" 2>/dev/null; then
+      systemctl disable --now "$svc" >/dev/null 2>&1 || failed=1
+    fi
+  done
+  if ip link show warp >/dev/null 2>&1; then
+    ip link del warp 2>/dev/null || failed=1
+  fi
+  for family in -4 -6; do
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      priority="${line%%:*}"
+      if [[ "$priority" =~ ^[0-9]+$ ]]; then
+        ip "$family" rule del pref "$priority" 2>/dev/null || failed=1
+      else
+        warn "Не удалось определить priority WARP rule ($family): $line"
+        failed=1
+      fi
+    done < <(ip "$family" rule show 2>/dev/null | grep -E 'lookup (51820|warp)([[:space:]]|$)' || true)
+    ip "$family" route flush table 51820 2>/dev/null || true
+    ip "$family" route flush table warp 2>/dev/null || true
+  done
+  if ip link show warp >/dev/null 2>&1; then
+    err "После cleanup остался интерфейс warp."
+    failed=1
+  fi
+  for family in -4 -6; do
+    if ip "$family" rule show 2>/dev/null | grep -Eq 'lookup (51820|warp)([[:space:]]|$)'; then
+      err "После cleanup остались WARP policy rules ($family)."
+      failed=1
+    fi
+    if ip "$family" route show table 51820 2>/dev/null | grep -q . || ip "$family" route show table warp 2>/dev/null | grep -q .; then
+      err "После cleanup таблица WARP не пуста ($family)."
+      failed=1
+    fi
+  done
+  [[ "$failed" -eq 0 ]] || return 1
   ok "Системные WARP routes очищены. wireproxy SOCKS5 не тронут."
+}
+
+validate_account_pair() {
+  local account_file="$1" private_file="$2"
+  [[ -s "$account_file" && -s "$private_file" ]] || return 1
+  wg pubkey < "$private_file" >/dev/null 2>&1 || return 1
+  python3 - "$account_file" <<'PY'
+import json, sys
+with open(sys.argv[1], encoding='utf-8') as fh:
+    data = json.load(fh)
+if not isinstance(data, dict) or not all(data.get(k) for k in ('id', 'token')):
+    raise SystemExit(1)
+config = data.get('config')
+if not isinstance(config, dict):
+    raise SystemExit(1)
+interface = config.get('interface')
+addresses = interface.get('addresses') if isinstance(interface, dict) else None
+if not isinstance(addresses, dict) or not all(isinstance(addresses.get(k), str) and addresses[k] for k in ('v4', 'v6')):
+    raise SystemExit(1)
+peers = config.get('peers')
+if not isinstance(peers, list) or not peers or not isinstance(peers[0], dict):
+    raise SystemExit(1)
+endpoint = peers[0].get('endpoint')
+if not isinstance(peers[0].get('public_key'), str) or not peers[0]['public_key']:
+    raise SystemExit(1)
+if not isinstance(endpoint, dict) or not isinstance(endpoint.get('host'), str) or not endpoint['host']:
+    raise SystemExit(1)
+PY
+}
+
+rollback_registration_transaction() {
+  [[ "$REGISTRATION_TRANSACTION_ACTIVE" == "1" && -n "$REGISTRATION_TRANSACTION_DIR" ]] || return 0
+  warn "Откатываю незавершённую замену WARP account/private key."
+  if [[ -f "$REGISTRATION_TRANSACTION_DIR/private.existed" ]]; then
+    cp -a "$REGISTRATION_TRANSACTION_DIR/private.backup" "$PRIVATE_KEY_FILE" 2>/dev/null || true
+  else
+    rm -f "$PRIVATE_KEY_FILE" 2>/dev/null || true
+  fi
+  if [[ -f "$REGISTRATION_TRANSACTION_DIR/account.existed" ]]; then
+    cp -a "$REGISTRATION_TRANSACTION_DIR/account.backup" "$ACCOUNT_JSON" 2>/dev/null || true
+  else
+    rm -f "$ACCOUNT_JSON" 2>/dev/null || true
+  fi
+  REGISTRATION_TRANSACTION_ACTIVE="0"
+  rm -rf -- "$REGISTRATION_TRANSACTION_DIR" 2>/dev/null || true
+  REGISTRATION_TRANSACTION_DIR=""
 }
 
 register_warp_account() {
   mkdir -p "$WG_DIR"; chmod 700 "$WG_DIR"
-  if [[ "$FORCE_REGISTER" != "1" && -f "$ACCOUNT_JSON" && -f "$PRIVATE_KEY_FILE" ]]; then ok "WARP-аккаунт уже есть. Использую существующий $ACCOUNT_JSON"; return 0; fi
+  if [[ "$FORCE_REGISTER" != "1" && -f "$ACCOUNT_JSON" && -f "$PRIVATE_KEY_FILE" ]]; then
+    if validate_account_pair "$ACCOUNT_JSON" "$PRIVATE_KEY_FILE"; then
+      ok "WARP-аккаунт уже есть. Использую существующий $ACCOUNT_JSON"
+      return 0
+    fi
+    warn "Существующая пара WARP account/private key повреждена; регистрирую новую."
+  fi
   log "Генерирую WireGuard ключи и регистрирую WARP-устройство через API Cloudflare..."
-  local private_key public_key tos body tmp
-  private_key="$(wg genkey)"; public_key="$(printf '%s' "$private_key" | wg pubkey)"; tos="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"; tmp="/tmp/warp-register.$$.json"
-  printf '%s\n' "$private_key" > "$PRIVATE_KEY_FILE"; chmod 600 "$PRIVATE_KEY_FILE"
+  local private_key public_key tos body staged_key staged_account txn_dir
+  staged_key="$TMP_DIR/warp-private.key.new"
+  staged_account="$TMP_DIR/warp-account.json.new"
+  private_key="$(wg genkey)" || { err "Не удалось создать WireGuard private key."; return 1; }
+  public_key="$(printf '%s' "$private_key" | wg pubkey)" || { err "Не удалось получить WireGuard public key."; return 1; }
+  tos="$(date -u +%Y-%m-%dT%H:%M:%S.000Z)"
+  printf '%s\n' "$private_key" > "$staged_key"
+  chmod 600 "$staged_key"
   body="$(python3 - "$public_key" "$tos" <<'PY'
 import json, sys
 pub, tos = sys.argv[1], sys.argv[2]
 print(json.dumps({'key': pub, 'install_id': '', 'fcm_token': '', 'tos': tos, 'type': 'Android', 'model': 'PC', 'locale': 'en_US'}))
 PY
 )"
-  curl -fsSL -X POST 'https://api.cloudflareclient.com/v0a2158/reg' -H 'Content-Type: application/json; charset=UTF-8' -H 'User-Agent: okhttp/3.12.1' -H 'CF-Client-Version: a-6.11-2223' --data "$body" > "$tmp"
-  python3 - "$tmp" <<'PY'
-import json, sys
-data=json.load(open(sys.argv[1])); missing=[k for k in ['id','token','config'] if k not in data]
-if missing: raise SystemExit('bad response, missing: '+','.join(missing))
-PY
-  mv "$tmp" "$ACCOUNT_JSON"; chmod 600 "$ACCOUNT_JSON"; ok "WARP-аккаунт зарегистрирован."
+  if ! curl -fsSL -X POST 'https://api.cloudflareclient.com/v0a2158/reg' -H 'Content-Type: application/json; charset=UTF-8' -H 'User-Agent: okhttp/3.12.1' -H 'CF-Client-Version: a-6.11-2223' --data "$body" > "$staged_account"; then
+    err "Cloudflare API не зарегистрировал WARP-устройство; рабочие ключи не изменены."
+    return 1
+  fi
+  chmod 600 "$staged_account"
+  validate_account_pair "$staged_account" "$staged_key" || {
+    err "Cloudflare API вернул неполный account; рабочие ключи не изменены."
+    return 1
+  }
+
+  txn_dir="$(mktemp -d "$WG_DIR/.warp-registration.XXXXXX")" || return 1
+  chmod 700 "$txn_dir"
+  REGISTRATION_TRANSACTION_DIR="$txn_dir"
+  REGISTRATION_TRANSACTION_ACTIVE="1"
+  if [[ -f "$PRIVATE_KEY_FILE" ]]; then
+    if ! cp -a "$PRIVATE_KEY_FILE" "$txn_dir/private.backup"; then rollback_registration_transaction; return 1; fi
+    : > "$txn_dir/private.existed"
+  fi
+  if [[ -f "$ACCOUNT_JSON" ]]; then
+    if ! cp -a "$ACCOUNT_JSON" "$txn_dir/account.backup"; then rollback_registration_transaction; return 1; fi
+    : > "$txn_dir/account.existed"
+  fi
+  install -m 0600 "$staged_key" "$txn_dir/private.new" || { rollback_registration_transaction; return 1; }
+  install -m 0600 "$staged_account" "$txn_dir/account.new" || { rollback_registration_transaction; return 1; }
+  mv -f "$txn_dir/private.new" "$PRIVATE_KEY_FILE" || { rollback_registration_transaction; return 1; }
+  mv -f "$txn_dir/account.new" "$ACCOUNT_JSON" || { rollback_registration_transaction; return 1; }
+  validate_account_pair "$ACCOUNT_JSON" "$PRIVATE_KEY_FILE" || { rollback_registration_transaction; return 1; }
+  REGISTRATION_TRANSACTION_ACTIVE="0"
+  rm -rf -- "$txn_dir"
+  REGISTRATION_TRANSACTION_DIR=""
+  ok "WARP-аккаунт зарегистрирован."
 }
 
 json_get_config() {
@@ -404,10 +666,14 @@ EOF_LEGACY
 }
 
 set_endpoint() {
-  local ep="$1"
-  [[ -f "$WARP_CONF" ]] && sed -i "s#^Endpoint[[:space:]]*=.*#Endpoint = $ep#I" "$WARP_CONF"
-  [[ -f "$LEGACY_WARP_CONF" ]] && sed -i "s#^Endpoint[[:space:]]*=.*#Endpoint = $ep#I" "$LEGACY_WARP_CONF"
-  sed -i "s#^Endpoint[[:space:]]*=.*#Endpoint = $ep#I" "$PROXY_CONF"
+  local ep="$1" file
+  valid_endpoint "$ep" || { err "Отказ менять конфиг на некорректный endpoint: $ep"; return 1; }
+  [[ -f "$PROXY_CONF" ]] || { err "Не найден $PROXY_CONF."; return 1; }
+  for file in "$WARP_CONF" "$LEGACY_WARP_CONF" "$PROXY_CONF"; do
+    [[ -f "$file" ]] || continue
+    grep -qi '^Endpoint[[:space:]]*=' "$file" || { err "В $file отсутствует Endpoint."; return 1; }
+    sed -i "s#^Endpoint[[:space:]]*=.*#Endpoint = $ep#I" "$file" || { err "Не удалось обновить Endpoint в $file."; return 1; }
+  done
 }
 create_service() {
   local bin; bin="$(find_wireproxy_bin)"
@@ -433,26 +699,91 @@ EOF_SERVICE
 ensure_service_exists() { [[ -f "$SERVICE_FILE" ]] || systemctl list-unit-files 2>/dev/null | grep -q '^wireproxy\.service' && return 0; find_wireproxy_bin >/dev/null 2>&1 && [[ -f "$PROXY_CONF" ]] && { create_service; return 0; }; return 1; }
 # wireproxy занимает порт за доли секунды. Опрос вместо фиксированного
 # sleep 2 экономит почти всё время перебора кандидатов.
-socks_port_listening() { ss -lnt 2>/dev/null | grep -q "$SOCKS_HOST:$SOCKS_PORT"; }
+socks_address() { printf '%s:%s' "$SOCKS_HOST" "$SOCKS_PORT"; }
+socks_proxy_url() {
+  local host="$SOCKS_HOST"
+  host="${host#[}"
+  host="${host%]}"
+  case "$host" in 0.0.0.0) host="127.0.0.1" ;; ::) host="::1" ;; esac
+  [[ "$host" == *:* ]] && host="[$host]"
+  printf 'socks5h://%s:%s' "$host" "$SOCKS_PORT"
+}
+socks_port_listening() {
+  local address
+  address="$(socks_address)"
+  ss -H -lnt 2>/dev/null | awk -v address="$address" '$4 == address { found=1 } END { exit !found }'
+}
 wait_for_socks_port() { local i; for ((i = 0; i < PORT_WAIT_TRIES; i++)); do if socks_port_listening; then return 0; fi; sleep 0.1; done; return 1; }
-restart_wireproxy() { ensure_service_exists || { err "wireproxy.service отсутствует, а $PROXY_CONF или бинарник wireproxy не найден."; exit 1; }; systemctl restart wireproxy; wait_for_socks_port || sleep 2; }
-check_port() { socks_port_listening && ok "SOCKS5 слушает $SOCKS_HOST:$SOCKS_PORT" || { warn "SOCKS5 порт пока не виден. Статус wireproxy:"; systemctl status wireproxy --no-pager -l | head -80 || true; }; }
+restart_wireproxy() {
+  ensure_service_exists || { err "wireproxy.service отсутствует, а $PROXY_CONF или бинарник wireproxy не найден."; return 1; }
+  systemctl restart wireproxy || { err "Не удалось перезапустить wireproxy.service."; return 1; }
+  wait_for_socks_port || {
+    err "wireproxy.service не открыл SOCKS5 $(socks_address) за отведённое время."
+    systemctl status wireproxy --no-pager -l | head -80 || true
+    return 1
+  }
+}
+check_port() {
+  if socks_port_listening; then
+    ok "SOCKS5 слушает $(socks_address)"
+    return 0
+  fi
+  warn "SOCKS5 порт пока не виден. Статус wireproxy:"
+  systemctl status wireproxy --no-pager -l | head -80 || true
+  return 1
+}
 ensure_wireproxy_ready_for_check() {
   if systemctl is-active --quiet wireproxy && socks_port_listening; then
     log "wireproxy уже активен, перезапуск для проверки не требуется."
     return 0
   fi
   warn "wireproxy неактивен или SOCKS5-порт не слушает; перезапускаю сервис."
-  restart_wireproxy
+  restart_wireproxy || return 1
 }
 get_current_endpoint() { grep -i '^Endpoint' "$PROXY_CONF" 2>/dev/null | head -n1 | awk -F= '{gsub(/^[ \t]+|[ \t]+$/, "", $2); print $2}'; }
 
+begin_scan_transaction() {
+  [[ "$SCAN_TRANSACTION_ACTIVE" == "0" ]] || return 0
+  SCAN_ORIGINAL_ENDPOINT="$(get_current_endpoint || true)"
+  valid_endpoint "$SCAN_ORIGINAL_ENDPOINT" || {
+    err "Невозможно безопасно начать scan: текущий Endpoint отсутствует или некорректен."
+    return 1
+  }
+  SCAN_TRANSACTION_ACTIVE="1"
+}
+
+restore_scan_original() {
+  [[ "$SCAN_TRANSACTION_ACTIVE" == "1" ]] || return 0
+  warn "Возвращаю исходный endpoint: $SCAN_ORIGINAL_ENDPOINT"
+  set_endpoint "$SCAN_ORIGINAL_ENDPOINT" || return 1
+  systemctl restart wireproxy >/dev/null 2>&1 || return 1
+  wait_for_socks_port || return 1
+}
+
+rollback_scan_transaction() {
+  [[ "$SCAN_TRANSACTION_ACTIVE" == "1" ]] || return 0
+  if ! restore_scan_original; then
+    err "Не удалось полностью откатить исходный endpoint $SCAN_ORIGINAL_ENDPOINT."
+  fi
+  SCAN_TRANSACTION_ACTIVE="0"
+}
+
+commit_scan_transaction() {
+  [[ "$SCAN_TRANSACTION_ACTIVE" == "1" ]] || return 0
+  SCAN_TRANSACTION_ACTIVE="0"
+  SCAN_ORIGINAL_ENDPOINT=""
+}
+
 quick_warp_check() {
-  local raw trace endpoint time_total colo loc cache_line _ep _time _colo _loc _ts cached_loss cached_stable cached_scanner
-  raw="$(LC_ALL=C curl -m "$PROBE_TIMEOUT" -s -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" -w '\n__TIME_TOTAL__=%{time_total}\n' "$TEST_URL" 2>/dev/null || true)"
+  local raw trace endpoint time_total http_code colo loc cache_line _ep _time _colo _loc _ts cached_loss cached_stable cached_scanner
+  if ! raw="$(LC_ALL=C curl -m "$PROBE_TIMEOUT" -sS -x "$(socks_proxy_url)" -w '\n__TIME_TOTAL__=%{time_total}\n__HTTP_CODE__=%{http_code}\n' "$TEST_URL" 2>/dev/null)"; then
+    return 1
+  fi
   trace="$(printf '%s\n' "$raw" | grep -E '^(ip|colo|loc|warp)=' || true)"
   BEST_TRACE="$trace"
-  printf '%s\n' "$trace" | grep -q '^warp=on' || return 1
+  http_code="$(printf '%s\n' "$raw" | awk -F= '$1=="__HTTP_CODE__"{print $2; exit}')"
+  [[ "$http_code" == "200" ]] || return 1
+  printf '%s\n' "$trace" | grep -q '^warp=on$' || return 1
   endpoint="$(get_current_endpoint || true)"
   colo="$(printf '%s\n' "$trace" | awk -F= '$1=="colo"{print $2; exit}')"
   loc="$(printf '%s\n' "$trace" | awk -F= '$1=="loc"{print $2; exit}')"
@@ -476,14 +807,16 @@ quick_warp_check() {
 remember_good_endpoint() { local ep="${1:-}" time="${2:-0}" colo="${3:-unknown}" loc="${4:-unknown}" loss="${5:-0}" stable="${6:-1}" scanner="${7:-native}" ts; [[ -z "$ep" ]] && return 0; mkdir -p "$WG_DIR"; ts="$(date +%s)"; touch "$GOOD_ENDPOINTS_FILE" "$BAD_ENDPOINTS_FILE"; awk -v ep="$ep" -F'\t' '$1 != ep {print}' "$GOOD_ENDPOINTS_FILE" > "${GOOD_ENDPOINTS_FILE}.tmp" 2>/dev/null || true; mv "${GOOD_ENDPOINTS_FILE}.tmp" "$GOOD_ENDPOINTS_FILE" 2>/dev/null || true; printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$ep" "$time" "$colo" "$loc" "$ts" "$loss" "$stable" "$scanner" >> "$GOOD_ENDPOINTS_FILE"; LC_ALL=C sort -t $'\t' -k2,2n "$GOOD_ENDPOINTS_FILE" | head -n 30 > "${GOOD_ENDPOINTS_FILE}.tmp" || true; mv "${GOOD_ENDPOINTS_FILE}.tmp" "$GOOD_ENDPOINTS_FILE" 2>/dev/null || true; awk -v ep="$ep" -F'\t' '$1 != ep {print}' "$BAD_ENDPOINTS_FILE" > "${BAD_ENDPOINTS_FILE}.tmp" 2>/dev/null || true; mv "${BAD_ENDPOINTS_FILE}.tmp" "$BAD_ENDPOINTS_FILE" 2>/dev/null || true; }
 remember_bad_endpoint() { local ep="${1:-}" ts count; [[ -z "$ep" ]] && return 0; mkdir -p "$WG_DIR"; touch "$BAD_ENDPOINTS_FILE"; ts="$(date +%s)"; count="$(awk -v ep="$ep" -F'\t' '$1 == ep {print $2}' "$BAD_ENDPOINTS_FILE" 2>/dev/null | tail -n1)"; count="${count:-0}"; count=$((count + 1)); awk -v ep="$ep" -F'\t' '$1 != ep {print}' "$BAD_ENDPOINTS_FILE" > "${BAD_ENDPOINTS_FILE}.tmp" 2>/dev/null || true; mv "${BAD_ENDPOINTS_FILE}.tmp" "$BAD_ENDPOINTS_FILE" 2>/dev/null || true; printf '%s\t%s\t%s\n' "$ep" "$count" "$ts" >> "$BAD_ENDPOINTS_FILE"; tail -n 200 "$BAD_ENDPOINTS_FILE" > "${BAD_ENDPOINTS_FILE}.tmp" || true; mv "${BAD_ENDPOINTS_FILE}.tmp" "$BAD_ENDPOINTS_FILE" 2>/dev/null || true; }
 is_bad_endpoint() { local ep="${1:-}" now ts count age; [[ -z "$ep" || ! -f "$BAD_ENDPOINTS_FILE" ]] && return 1; now="$(date +%s)"; count="$(awk -v ep="$ep" -F'\t' '$1 == ep {print $2}' "$BAD_ENDPOINTS_FILE" | tail -n1)"; ts="$(awk -v ep="$ep" -F'\t' '$1 == ep {print $3}' "$BAD_ENDPOINTS_FILE" | tail -n1)"; count="${count:-0}"; ts="${ts:-0}"; age=$((now - ts)); [[ "$count" -ge 3 && "$age" -lt 86400 ]]; }
-append_candidate() { local ep="${1:-}"; [[ -z "$ep" ]] && return 0; is_bad_endpoint "$ep" && return 0; grep -qxF "$ep" "$CANDIDATES_FILE" 2>/dev/null || echo "$ep" >> "$CANDIDATES_FILE"; }
-generate_endpoint_candidates() { : > "$CANDIDATES_FILE"; local current_endpoint ep made attempts prefix last_octet port; current_endpoint="$(get_current_endpoint || true)"; [[ -n "$current_endpoint" ]] && append_candidate "$current_endpoint"; if [[ -f "$GOOD_ENDPOINTS_FILE" ]]; then while IFS=$'\t' read -r ep _rest; do append_candidate "$ep"; done < <(LC_ALL=C sort -t $'\t' -k2,2n "$GOOD_ENDPOINTS_FILE" | head -n 20); fi; if [[ "$USE_CUSTOM_ENDPOINTS" == "1" ]]; then for ep in "${CUSTOM_ENDPOINTS[@]}"; do append_candidate "$ep"; done; return 0; fi; for ep in engage.cloudflareclient.com:2408 162.159.192.244:1843 162.159.195.100:1010 162.159.193.10:2408 188.114.96.10:2408 188.114.97.10:2408; do append_candidate "$ep"; done; made=0; attempts=0; while [[ "$made" -lt "$SCAN_COUNT" && "$attempts" -lt $((SCAN_COUNT * 10 + 200)) ]]; do attempts=$((attempts + 1)); prefix="${WARP_PREFIXES[$((RANDOM % ${#WARP_PREFIXES[@]}))]}"; last_octet="$((RANDOM % 256))"; port="${WARP_PORTS[$((RANDOM % ${#WARP_PORTS[@]}))]}"; ep="${prefix}.${last_octet}:${port}"; if ! grep -qxF "$ep" "$CANDIDATES_FILE" 2>/dev/null && ! is_bad_endpoint "$ep"; then echo "$ep" >> "$CANDIDATES_FILE"; made=$((made + 1)); fi; done; ok "Кандидатов endpoint: $(wc -l < "$CANDIDATES_FILE" | tr -d ' ')"; }
+append_candidate() { local ep="${1:-}" forced="${2:-0}"; [[ -z "$ep" ]] && return 0; [[ "$forced" == "1" ]] || ! is_bad_endpoint "$ep" || return 0; grep -qxF "$ep" "$CANDIDATES_FILE" 2>/dev/null || echo "$ep" >> "$CANDIDATES_FILE"; }
+generate_endpoint_candidates() { : > "$CANDIDATES_FILE"; local current_endpoint ep made attempts prefix last_octet port; if [[ "$USE_CUSTOM_ENDPOINTS" == "1" ]]; then for ep in "${CUSTOM_ENDPOINTS[@]}"; do append_candidate "$ep" "1"; done; ok "Пользовательских endpoint: $(wc -l < "$CANDIDATES_FILE" | tr -d ' ')"; return 0; fi; current_endpoint="$(get_current_endpoint || true)"; [[ -n "$current_endpoint" ]] && append_candidate "$current_endpoint"; if [[ -f "$GOOD_ENDPOINTS_FILE" ]]; then while IFS=$'\t' read -r ep _rest; do append_candidate "$ep"; done < <(LC_ALL=C sort -t $'\t' -k2,2n "$GOOD_ENDPOINTS_FILE" | head -n 20); fi; for ep in engage.cloudflareclient.com:2408 162.159.192.244:1843 162.159.195.100:1010 162.159.193.10:2408 188.114.96.10:2408 188.114.97.10:2408; do append_candidate "$ep"; done; made=0; attempts=0; while [[ "$made" -lt "$SCAN_COUNT" && "$attempts" -lt $((SCAN_COUNT * 10 + 200)) ]]; do attempts=$((attempts + 1)); prefix="${WARP_PREFIXES[$((RANDOM % ${#WARP_PREFIXES[@]}))]}"; last_octet="$((RANDOM % 256))"; port="${WARP_PORTS[$((RANDOM % ${#WARP_PORTS[@]}))]}"; ep="${prefix}.${last_octet}:${port}"; if ! grep -qxF "$ep" "$CANDIDATES_FILE" 2>/dev/null && ! is_bad_endpoint "$ep"; then echo "$ep" >> "$CANDIDATES_FILE"; made=$((made + 1)); fi; done; ok "Кандидатов endpoint: $(wc -l < "$CANDIDATES_FILE" | tr -d ' ')"; }
 
 stability_check() {
   local first_time="$1" raw http_code warp time_total i successes=1 tail_failures=0 times
   times="$first_time"
   for ((i = 2; i <= STABILITY_PROBES; i++)); do
-    raw="$(LC_ALL=C curl -m "$PROBE_TIMEOUT" -sS -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" -w '\n__TIME_TOTAL__=%{time_total}\n__HTTP_CODE__=%{http_code}\n' "$TEST_URL" 2>/dev/null || true)"
+    if ! raw="$(LC_ALL=C curl -m "$PROBE_TIMEOUT" -sS -x "$(socks_proxy_url)" -w '\n__TIME_TOTAL__=%{time_total}\n__HTTP_CODE__=%{http_code}\n' "$TEST_URL" 2>/dev/null)"; then
+      raw=""
+    fi
     http_code="$(printf '%s\n' "$raw" | awk -F= '$1=="__HTTP_CODE__"{print $2; exit}')"
     warp="$(printf '%s\n' "$raw" | awk -F= '$1=="warp"{print $2; exit}')"
     time_total="$(printf '%s\n' "$raw" | awk -F= '$1=="__TIME_TOTAL__"{print $2; exit}')"
@@ -502,10 +835,16 @@ stability_check() {
 }
 
 test_endpoint() {
-  local ep="$1" trace_file="/tmp/warp_native_trace.$$" rc=0 warp ip colo loc time_total http_code policy
-  set_endpoint "$ep"
-  restart_wireproxy
-  LC_ALL=C curl -m "$PROBE_TIMEOUT" -sS -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" -w '\n__TIME_TOTAL__=%{time_total}\n__HTTP_CODE__=%{http_code}\n' "$TEST_URL" > "$trace_file" 2>/dev/null || rc=$?
+  local ep="$1" trace_file="$TMP_DIR/trace" rc=0 warp ip colo loc time_total http_code policy
+  if ! set_endpoint "$ep"; then
+    printf '%s\tFAIL\tconfig_update\t-\t-\t-\t-\t100\t0\t-\t%s\n' "$ep" "$CURRENT_SCANNER" >> "$RESULT_FILE"
+    return 1
+  fi
+  if ! restart_wireproxy; then
+    printf '%s\tFAIL\tservice_restart\t-\t-\t-\t-\t100\t0\t-\t%s\n' "$ep" "$CURRENT_SCANNER" >> "$RESULT_FILE"
+    return 1
+  fi
+  LC_ALL=C curl -m "$PROBE_TIMEOUT" -sS -x "$(socks_proxy_url)" -w '\n__TIME_TOTAL__=%{time_total}\n__HTTP_CODE__=%{http_code}\n' "$TEST_URL" > "$trace_file" 2>/dev/null || rc=$?
   if [[ "$rc" -ne 0 ]]; then
     printf '%s\tFAIL\tcurl_rc=%s\t-\t-\t-\t-\t100\t0\t-\t%s\n' "$ep" "$rc" "$CURRENT_SCANNER" >> "$RESULT_FILE"
     remember_bad_endpoint "$ep"
@@ -556,8 +895,12 @@ apply_best_line() {
   BEST_LOSS="$(printf '%s' "$best_line" | awk -F'\t' '{print $8}')"
   BEST_STABLE="$(printf '%s' "$best_line" | awk -F'\t' '{print $9}')"
   BEST_SCANNER="$(printf '%s' "$best_line" | awk -F'\t' '{print $11}')"
-  set_endpoint "$BEST_ENDPOINT"
-  [[ "$already_active" == "1" ]] || restart_wireproxy
+  set_endpoint "$BEST_ENDPOINT" || return 1
+  if [[ "$already_active" != "1" ]]; then
+    restart_wireproxy || return 1
+  else
+    wait_for_socks_port || return 1
+  fi
   remember_good_endpoint "$BEST_ENDPOINT" "$BEST_TIME" "$BEST_COLO" "$BEST_LOC" "$BEST_LOSS" "$BEST_STABLE" "$BEST_SCANNER"
   ok "Выбран endpoint: $BEST_ENDPOINT time_total=$BEST_TIME probe_loss=${BEST_LOSS}% colo=$BEST_COLO loc=$BEST_LOC scanner=$BEST_SCANNER"
 }
@@ -566,11 +909,10 @@ select_best_endpoint_native() {
   CURRENT_SCANNER="native"
   generate_endpoint_candidates
   : > "$RESULT_FILE"
-  local ep best_line original_endpoint total good_count=0 tested=0
+  local ep best_line total good_count=0 tested=0
   # Перебор переписывает Endpoint прямо в боевом конфиге, поэтому запоминаем
   # исходный: если ни один кандидат не взлетит, надо вернуть как было, а не
   # оставить в proxy.conf последний случайный адрес.
-  original_endpoint="$(get_current_endpoint || true)"
   total="$(wc -l < "$CANDIDATES_FILE" | tr -d ' ')"
   while IFS= read -r ep; do
     [[ -z "$ep" ]] && continue
@@ -599,15 +941,10 @@ select_best_endpoint_native() {
     warn "Endpoint по policy не найден; использую рабочий fallback (mode=prefer)."
   fi
   if [[ -z "$best_line" ]]; then
-    if [[ -n "$original_endpoint" ]]; then
-      warn "Рабочий endpoint не найден. Возвращаю прежний: $original_endpoint"
-      set_endpoint "$original_endpoint"
-      systemctl restart wireproxy 2>/dev/null || true
-    fi
     err "Не найден стабильный endpoint с warp=on, подходящий под policy: $(policy_summary)"
     exit 1
   fi
-  apply_best_line "$best_line"
+  apply_best_line "$best_line" || return 1
 }
 
 find_warpscout_bin() {
@@ -653,12 +990,12 @@ valid_scanned_endpoint() {
     return 1
   fi
   port="${ep##*:}"; port="${port%]}"
-  [[ "$port" -ge 1 && "$port" -le 65535 ]] || return 1
+  valid_port "$port" || return 1
   python3 -c 'import ipaddress, sys; ipaddress.ip_address(sys.argv[1])' "$host" >/dev/null 2>&1
 }
 
 select_best_endpoint_warpscout() {
-  local bin sample ping_count output endpoint original_endpoint best_line
+  local bin sample ping_count output endpoint best_line
   local -a args
   [[ "$USE_CUSTOM_ENDPOINTS" == "0" ]] || { warn "WARPSCOUT mode не поддерживает список endpoint:port; использую native scanner."; return 1; }
   bin="$(find_warpscout_bin)" || { warn "WARPSCOUT не найден: $WARPSCOUT_BIN"; return 1; }
@@ -667,7 +1004,6 @@ select_best_endpoint_warpscout() {
   ping_count="$STABILITY_PROBES"; [[ "$ping_count" -lt 5 ]] && ping_count=5
   args=(scan -p wg -a "$WARPSCOUT_ACCOUNT_FILE" -n "$sample" -jt "$WARPSCOUT_JOBS" -t "$PROBE_TIMEOUT" -tun-ping-count "$ping_count" -plain -best -no-report)
   [[ -n "$NODE_ALLOW" ]] && args+=(-node "$NODE_ALLOW")
-  original_endpoint="$(get_current_endpoint || true)"
   log "WARPSCOUT discovery: sample=$sample jobs=$WARPSCOUT_JOBS policy=$(policy_summary)"
   if ! output="$("$bin" "${args[@]}")"; then
     warn "WARPSCOUT не нашёл подходящий endpoint."
@@ -680,7 +1016,7 @@ select_best_endpoint_warpscout() {
   log "Финально проверяю найденный WARPSCOUT endpoint через wireproxy: $endpoint"
   if ! test_endpoint "$endpoint"; then
     warn "WARPSCOUT endpoint не прошёл финальную проверку Manager."
-    if [[ -n "$original_endpoint" ]]; then set_endpoint "$original_endpoint"; systemctl restart wireproxy 2>/dev/null || true; fi
+    restore_scan_original || return 1
     return 1
   fi
   if [[ "$LAST_POLICY_MATCH" != "1" ]]; then
@@ -688,17 +1024,18 @@ select_best_endpoint_warpscout() {
       warn "WARPSCOUT endpoint не соответствует policy; принимаю fallback в mode=prefer."
     else
       warn "WARPSCOUT endpoint не соответствует policy; ищу другой через native scanner."
-      if [[ -n "$original_endpoint" ]]; then set_endpoint "$original_endpoint"; systemctl restart wireproxy 2>/dev/null || true; fi
+      restore_scan_original || return 1
       return 1
     fi
   fi
   best_line="$(awk -F'\t' '$2=="OK"{print $0; exit}' "$RESULT_FILE")"
   [[ -n "$best_line" ]] || return 1
-  apply_best_line "$best_line" "1"
+  apply_best_line "$best_line" "1" || return 1
   return 0
 }
 
 select_best_endpoint() {
+  begin_scan_transaction || exit 1
   case "$SCANNER" in
     native) select_best_endpoint_native ;;
     warpscout)
@@ -711,9 +1048,56 @@ select_best_endpoint() {
       ;;
   esac
 }
-final_check() { BEST_TRACE="$(curl -m "$FINAL_TIMEOUT" -s -x "socks5h://$SOCKS_HOST:$SOCKS_PORT" "$TEST_URL" | grep -E 'ip=|colo=|loc=|warp=' || true)"; echo "$BEST_TRACE"; echo "$BEST_TRACE" | grep -q '^warp=on' || { err "Финальная проверка не показала warp=on."; systemctl status wireproxy --no-pager -l | head -80 || true; exit 1; }; ok "WARP работает: warp=on"; }
+final_check() {
+  local raw http_code
+  if ! raw="$(LC_ALL=C curl -m "$FINAL_TIMEOUT" -sS -x "$(socks_proxy_url)" -w '\n__HTTP_CODE__=%{http_code}\n' "$TEST_URL" 2>/dev/null)"; then
+    err "Финальная проверка Cloudflare завершилась ошибкой curl."
+    return 1
+  fi
+  http_code="$(printf '%s\n' "$raw" | awk -F= '$1=="__HTTP_CODE__"{print $2; exit}')"
+  BEST_TRACE="$(printf '%s\n' "$raw" | grep -E '^(ip|colo|loc|warp)=' || true)"
+  echo "$BEST_TRACE"
+  if [[ "$http_code" != "200" ]] || ! printf '%s\n' "$BEST_TRACE" | grep -q '^warp=on$'; then
+    err "Финальная проверка не получила HTTP 200 с warp=on."
+    systemctl status wireproxy --no-pager -l | head -80 || true
+    return 1
+  fi
+  ok "WARP работает: warp=on"
+}
 
-run_check_and_repair() { cleanup_system_warp_routes; log "Режим проверки: проверяю текущий WARP без переустановки и без apt update."; [[ -f "$PROXY_CONF" ]] || { err "Не найден $PROXY_CONF. Сначала запусти обычную установку без --check."; exit 1; }; find_wireproxy_bin >/dev/null 2>&1 || { err "wireproxy не найден. Сначала запусти обычную установку без --check."; exit 1; }; ensure_service_exists || create_service; ensure_wireproxy_ready_for_check; check_port; if quick_warp_check; then ok "WARP живой, endpoint менять не нужно."; echo "$BEST_TRACE"; echo; echo "Текущий endpoint: $(get_current_endpoint)"; echo "Кэш good endpoint'ов: $GOOD_ENDPOINTS_FILE"; exit 0; fi; warn "WARP не отвечает или нет warp=on. Запускаю быстрый перескан endpoint'ов..."; backup_existing; select_best_endpoint; final_check; echo; ok "Endpoint был автоматически заменён на рабочий: $BEST_ENDPOINT"; print_result; }
+load_socks_bind_from_proxy() {
+  local bind host port
+  bind="$(awk -F= 'tolower($1) ~ /^[[:space:]]*bindaddress[[:space:]]*$/ {v=$2; sub(/^[[:space:]]*/,"",v); sub(/[[:space:]]*$/,"",v); print v; exit}' "$PROXY_CONF")"
+  [[ -n "$bind" ]] || { err "В $PROXY_CONF отсутствует BindAddress."; return 1; }
+  valid_endpoint "$bind" || { err "Некорректный BindAddress в $PROXY_CONF: $bind"; return 1; }
+  if [[ "$bind" == \[* ]]; then host="${bind%]:*}]"; port="${bind##*:}"; else host="${bind%:*}"; port="${bind##*:}"; fi
+  [[ "$SOCKS_HOST_EXPLICIT" == "1" ]] || SOCKS_HOST="$host"
+  [[ "$SOCKS_PORT_EXPLICIT" == "1" ]] || SOCKS_PORT="$port"
+  validate_runtime_options
+}
+
+run_check_and_repair() {
+  [[ -f "$PROXY_CONF" ]] || { err "Не найден $PROXY_CONF. Сначала запусти обычную установку без --check."; exit 1; }
+  find_wireproxy_bin >/dev/null 2>&1 || { err "wireproxy не найден. Сначала запусти обычную установку без --check."; exit 1; }
+  load_socks_bind_from_proxy || exit 1
+  cleanup_system_warp_routes || exit 1
+  log "Режим проверки: проверяю текущий WARP без переустановки и без apt update."
+  ensure_service_exists || create_service
+  ensure_wireproxy_ready_for_check || exit 1
+  check_port || exit 1
+  if quick_warp_check; then
+    ok "WARP живой, endpoint менять не нужно."
+    echo "$BEST_TRACE"; echo; echo "Текущий endpoint: $(get_current_endpoint)"; echo "Кэш good endpoint'ов: $GOOD_ENDPOINTS_FILE"
+    exit 0
+  fi
+  warn "WARP не отвечает или нет warp=on. Запускаю быстрый перескан endpoint'ов..."
+  backup_existing
+  select_best_endpoint
+  final_check || exit 1
+  commit_scan_transaction
+  echo; ok "Endpoint был автоматически заменён на рабочий: $BEST_ENDPOINT"
+  print_result
+}
 
 print_result() { local endpoint_port; endpoint_port="${BEST_ENDPOINT##*:}"; cat <<EOF_RESULT
 
@@ -757,10 +1141,53 @@ zapret4rocket:
   endpoint UDP port: $endpoint_port
 
 Проверить вручную:
-  curl -m 10 -s -x socks5h://$SOCKS_HOST:$SOCKS_PORT https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|colo=|loc=|warp='
+  curl -m 10 -s -x "$(socks_proxy_url)" https://www.cloudflare.com/cdn-cgi/trace | grep -E 'ip=|colo=|loc=|warp='
 
 EOF_RESULT
 }
-cleanup() { rm -f "$RESULT_FILE" "$CANDIDATES_FILE" "$WARPSCOUT_ACCOUNT_FILE" /tmp/warp_native_trace.$$ 2>/dev/null || true; }
-main() { trap cleanup EXIT; parse_args "$@"; require_root; if [[ "$CHECK_ONLY" == "1" ]]; then check_deps_light; run_check_and_repair; exit 0; fi; install_deps; cleanup_system_warp_routes; ensure_wireproxy_installed; backup_existing; register_warp_account; write_configs; create_service; restart_wireproxy; check_port; select_best_endpoint; final_check; routing_guard_report; print_result; }
+cleanup() {
+  local rc=$?
+  trap - EXIT INT TERM
+  rollback_registration_transaction
+  rollback_scan_transaction
+  if [[ -n "$TMP_DIR" && -d "$TMP_DIR" && "$TMP_DIR" == /tmp/warp-wireproxy-native.* ]]; then rm -rf -- "$TMP_DIR"; fi
+  if [[ "$INTERNAL_LOCK_HELD" == "1" ]]; then flock -u 9 2>/dev/null || true; fi
+  return "$rc"
+}
+main() {
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  parse_args "$@"
+  require_root
+  init_runtime
+  if [[ "$CHECK_ONLY" == "1" ]]; then
+    check_deps_light
+    acquire_internal_lock
+    run_check_and_repair
+    exit 0
+  fi
+  if command -v flock >/dev/null 2>&1; then
+    acquire_internal_lock
+    install_deps
+  else
+    # На совсем минимальной системе сначала ставим util-linux вместе с
+    # остальными зависимостями, после чего уже можем сериализовать мутации.
+    install_deps
+    acquire_internal_lock
+  fi
+  cleanup_system_warp_routes || exit 1
+  ensure_wireproxy_installed
+  backup_existing
+  register_warp_account
+  write_configs
+  create_service
+  restart_wireproxy || exit 1
+  check_port || exit 1
+  select_best_endpoint
+  final_check || exit 1
+  commit_scan_transaction
+  routing_guard_report
+  print_result
+}
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi
