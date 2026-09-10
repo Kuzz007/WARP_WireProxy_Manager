@@ -54,7 +54,7 @@ https://github.com/kuzzrus/WARP_WireProxy_Manager
 Текущая версия:
 
 ```text
-warpwp v1.3.4
+warpwp v1.3.5
 warp-wireproxy-native.sh v1.2.2
 ```
 
@@ -65,7 +65,7 @@ warp-wireproxy-native.sh v1.2.2
 Установить менеджер из подписанного release (замени `TAG` на нужную версию):
 
 ```bash
-TAG=v1.3.4
+TAG=v1.3.5
 BASE="https://github.com/kuzzrus/WARP_WireProxy_Manager/releases/download/$TAG"
 TMP_DIR="$(mktemp -d)" && trap 'rm -rf "$TMP_DIR"' EXIT
 for FILE in warpwp.sh warp-wireproxy-native.sh install-warp-check.sh warp-wireproxy-auto.sh release-signing.pub SHA256SUMS SHA256SUMS.sig; do
@@ -159,17 +159,14 @@ warpwp --fix-routing
 10) PURGE / жёсткая очистка WARP-следов
 11) Включить cron/check и отключить timer
 12) Показать блоки для 3x-ui / Xray
-13) Показать строки для zapret4rocket
-14) Quick scan endpoint
-15) Deep scan endpoint
-16) Показать JSON-статус
-17) Включить systemd timer и отключить cron
-18) Статус systemd timer
-19) Удалить systemd timer
-20) Scheduler status
-21) Вставить WireGuard .conf и получить JSON для 3x-ui
-22) Конвертировать WireGuard .conf файл в JSON для 3x-ui
-23) Fix routing / убрать системный WARP full-tunnel
+13) Quick scan endpoint
+14) Deep scan endpoint
+15) Показать JSON-статус
+16) Включить systemd timer и отключить cron
+17) Статус systemd timer
+18) Удалить systemd timer
+19) Scheduler status
+20) Fix routing / убрать системный WARP full-tunnel
  0) Выход
 ============================================================
 ```
@@ -464,7 +461,7 @@ warpwp --update
 Чтобы установить строго определённую версию:
 
 ```bash
-warpwp --update v1.3.4
+warpwp --update v1.3.5
 ```
 
 ---
